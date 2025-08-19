@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -31,9 +30,16 @@ app.use('/api/', limiter);
 // Compression middleware
 app.use(compression());
 
-// CORS configuration - allow all origins for development
+// Updated CORS configuration to allow your frontend
 app.use(cors({
-  origin: true,
+  origin: [
+    'https://citation-training-academy.vercel.app',
+    'https://citation-training-academy.onrender.com',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:8000',
+    'http://127.0.0.1:8000'
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
@@ -46,9 +52,8 @@ app.options('*', cors());
 app.use(bodyParser.json({ limit: '10kb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '10kb' }));
 
-// MongoDB connection with properly encoded password
-const password = encodeURIComponent('JFJmHvP4ktikRYDC');
-const MONGODB_URI = process.env.MONGODB_URI || `mongodb+srv://elvismwangike:${password}@cluster0.vm6hrog.mongodb.net/citation_training?retryWrites=true&w=majority&appName=Cluster0`;
+// MongoDB connection with corrected options
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://elvismwangike:JFJmHvP4ktikRYDC@cluster0.vm6hrog.mongodb.net/citation_training?retryWrites=true&w=majority&appName=Cluster0';
 
 // Improved MongoDB connection with better error handling
 const connectDB = async () => {
@@ -80,7 +85,7 @@ db.on('disconnected', () => {
   setTimeout(() => connectDB(), 5000);
 });
 
-// Enrollment Schema - simplified validation for payment details
+// Enrollment Schema
 const enrollmentSchema = new mongoose.Schema({
   personalInfo: {
     firstName: {
@@ -169,17 +174,78 @@ const enrollmentSchema = new mongoose.Schema({
       message: 'Payment method must be credit-card or bitcoin'
     }
   },
-  paymentPlan: {
-    type: String,
-    required: [true, 'Payment plan is required'],
-    enum: {
-      values: ['full', 'installment'],
-      message: 'Payment plan must be full or installment'
-    }
-  },
   paymentDetails: {
-    type: Object,
-    default: {}
+    cardNumber: {
+      type: String,
+      validate: {
+        validator: function(cardNumber) {
+          // Only validate if payment method is credit-card AND cardNumber exists
+          if (this.paymentMethod !== 'credit-card') return true;
+          return cardNumber && /^\d{16}$/.test(cardNumber.replace(/\s/g, ''));
+        },
+        message: 'Please provide a valid card number'
+      }
+    },
+    cardHolder: {
+      type: String,
+      validate: {
+        validator: function(cardHolder) {
+          if (this.paymentMethod !== 'credit-card') return true;
+          return cardHolder && cardHolder.length >= 3;
+        },
+        message: 'Please provide a valid card holder name'
+      }
+    },
+    cardExpiry: {
+      type: String,
+      validate: {
+        validator: function(cardExpiry) {
+          if (this.paymentMethod !== 'credit-card') return true;
+          return cardExpiry && /^(0[1-9]|1[0-2])\/([0-9]{2})$/.test(cardExpiry);
+        },
+        message: 'Please provide a valid expiry date (MM/YY)'
+      }
+    },
+    cardCvv: {
+      type: String,
+      validate: {
+        validator: function(cardCvv) {
+          if (this.paymentMethod !== 'credit-card') return true;
+          return cardCvv && /^\d{3,4}$/.test(cardCvv);
+        },
+        message: 'Please provide a valid CVV'
+      }
+    },
+    billingAddress: {
+      type: String,
+      validate: {
+        validator: function(billingAddress) {
+          if (this.paymentMethod !== 'credit-card') return true;
+          return billingAddress && billingAddress.length >= 5;
+        },
+        message: 'Please provide a valid billing address'
+      }
+    },
+    billingCity: {
+      type: String,
+      validate: {
+        validator: function(billingCity) {
+          if (this.paymentMethod !== 'credit-card') return true;
+          return billingCity && billingCity.length >= 2;
+        },
+        message: 'Please provide a valid billing city'
+      }
+    },
+    billingPostalCode: {
+      type: String,
+      validate: {
+        validator: function(billingPostalCode) {
+          if (this.paymentMethod !== 'credit-card') return true;
+          return billingPostalCode && billingPostalCode.length >= 3;
+        },
+        message: 'Please provide a valid billing postal code'
+      }
+    }
   },
   amount: {
     type: Number,
@@ -202,13 +268,20 @@ const enrollmentSchema = new mongoose.Schema({
 
 const Enrollment = mongoose.model('Enrollment', enrollmentSchema);
 
-// Input validation middleware - simplified
+// Input validation middleware
 const validateEnrollmentInput = (req, res, next) => {
-  const { personalInfo, paymentMethod, paymentPlan, amount } = req.body;
+  const { personalInfo, paymentMethod, amount } = req.body;
   
-  if (!personalInfo || !paymentMethod || !paymentPlan || amount === undefined) {
+  if (!personalInfo || !paymentMethod || amount === undefined) {
     return res.status(400).json({ 
-      message: 'Missing required fields: personalInfo, paymentMethod, paymentPlan, or amount' 
+      message: 'Missing required fields: personalInfo, paymentMethod, or amount' 
+    });
+  }
+  
+  // Only require payment details for credit card payments
+  if (paymentMethod === 'credit-card' && !req.body.paymentDetails) {
+    return res.status(400).json({ 
+      message: 'Payment details are required for credit card payments' 
     });
   }
   
@@ -231,22 +304,12 @@ app.post('/api/enroll', validateEnrollmentInput, async (req, res) => {
     const newEnrollment = new Enrollment({
       personalInfo: enrollmentData.personalInfo,
       paymentMethod: enrollmentData.paymentMethod,
-      paymentPlan: enrollmentData.paymentPlan,
       paymentDetails: enrollmentData.paymentDetails || {},
       amount: enrollmentData.amount
     });
     
     // Save to database
     await newEnrollment.save();
-    
-    // Log the saved data for debugging
-    console.log('Enrollment saved successfully:', {
-      id: newEnrollment._id,
-      personalInfo: newEnrollment.personalInfo,
-      paymentMethod: newEnrollment.paymentMethod,
-      paymentPlan: newEnrollment.paymentPlan,
-      amount: newEnrollment.amount
-    });
     
     res.status(201).json({
       message: 'Enrollment submitted successfully',
