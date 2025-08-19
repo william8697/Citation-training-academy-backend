@@ -1,3 +1,4 @@
+// server.js
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -12,7 +13,7 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// MongoDB Connection
+// MongoDB connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://elvismwangike:JFJmHvP4ktikRYDC@cluster0.vm6hrog.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0', {
     useNewUrlParser: true,
     useUnifiedTopology: true
@@ -26,25 +27,32 @@ db.once('open', () => {
 
 // Enrollment Schema
 const enrollmentSchema = new mongoose.Schema({
-    firstName: { type: String, required: true },
-    lastName: { type: String, required: true },
-    email: { type: String, required: true },
-    phone: { type: String, required: true },
-    dob: { type: Date, required: true },
-    certificateNumber: { type: String, required: true },
-    street: { type: String, required: true },
-    city: { type: String, required: true },
-    state: { type: String, required: true },
-    zip: { type: String, required: true },
-    country: { type: String, required: true },
-    program: { type: String, required: true },
-    paymentMethod: { type: String, required: true },
-    cardNumber: { type: String },
-    cardName: { type: String },
-    cardExpiry: { type: String },
-    cardCvv: { type: String },
-    amount: { type: Number },
-    timestamp: { type: Date, default: Date.now }
+    personalInfo: {
+        firstName: String,
+        lastName: String,
+        email: String,
+        phone: String,
+        address: String,
+        city: String,
+        state: String,
+        postalCode: String,
+        country: String,
+        pilotLicense: String,
+        flightHours: Number
+    },
+    paymentMethod: String,
+    paymentDetails: {
+        cardNumber: String,
+        cardHolder: String,
+        cardExpiry: String,
+        cardCvv: String,
+        billingAddress: String,
+        billingCity: String,
+        billingPostalCode: String
+    },
+    amount: Number,
+    status: { type: String, default: 'pending' },
+    timestamp: Date
 });
 
 const Enrollment = mongoose.model('Enrollment', enrollmentSchema);
@@ -54,23 +62,25 @@ app.post('/api/enroll', async (req, res) => {
     try {
         const enrollmentData = req.body;
         
-        // Calculate amount based on program
-        if (enrollmentData.program === 'cj1') {
-            enrollmentData.amount = 24500;
-        } else if (enrollmentData.program === 'cj3') {
-            enrollmentData.amount = 29750;
-        }
+        // Create new enrollment
+        const newEnrollment = new Enrollment({
+            personalInfo: enrollmentData.personalInfo,
+            paymentMethod: enrollmentData.paymentMethod,
+            paymentDetails: enrollmentData.paymentDetails || {},
+            amount: enrollmentData.amount,
+            timestamp: new Date()
+        });
         
-        const enrollment = new Enrollment(enrollmentData);
-        await enrollment.save();
+        // Save to database
+        await newEnrollment.save();
         
-        res.status(201).json({ 
-            message: 'Enrollment submitted successfully', 
-            id: enrollment._id 
+        res.status(201).json({
+            message: 'Enrollment submitted successfully',
+            enrollmentId: newEnrollment._id
         });
     } catch (error) {
         console.error('Error saving enrollment:', error);
-        res.status(500).json({ message: 'Error processing enrollment' });
+        res.status(500).json({ message: 'Error processing enrollment', error: error.message });
     }
 });
 
@@ -80,15 +90,49 @@ app.get('/api/enrollments', async (req, res) => {
         res.json(enrollments);
     } catch (error) {
         console.error('Error fetching enrollments:', error);
-        res.status(500).json({ message: 'Error fetching enrollments' });
+        res.status(500).json({ message: 'Error fetching enrollments', error: error.message });
+    }
+});
+
+app.get('/api/enrollment/:id', async (req, res) => {
+    try {
+        const enrollment = await Enrollment.findById(req.params.id);
+        if (!enrollment) {
+            return res.status(404).json({ message: 'Enrollment not found' });
+        }
+        res.json(enrollment);
+    } catch (error) {
+        console.error('Error fetching enrollment:', error);
+        res.status(500).json({ message: 'Error fetching enrollment', error: error.message });
+    }
+});
+
+app.put('/api/enrollment/:id/status', async (req, res) => {
+    try {
+        const { status } = req.body;
+        const enrollment = await Enrollment.findByIdAndUpdate(
+            req.params.id,
+            { status },
+            { new: true }
+        );
+        
+        if (!enrollment) {
+            return res.status(404).json({ message: 'Enrollment not found' });
+        }
+        
+        res.json({ message: 'Status updated successfully', enrollment });
+    } catch (error) {
+        console.error('Error updating enrollment status:', error);
+        res.status(500).json({ message: 'Error updating enrollment status', error: error.message });
     }
 });
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-    res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
+// Start server
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
