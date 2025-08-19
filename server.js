@@ -180,8 +180,9 @@ const enrollmentSchema = new mongoose.Schema({
       type: String,
       validate: {
         validator: function(cardNumber) {
+          // Only validate if payment method is credit-card AND cardNumber exists
           if (this.paymentMethod !== 'credit-card') return true;
-          return /^\d{16}$/.test(cardNumber.replace(/\s/g, ''));
+          return cardNumber && /^\d{16}$/.test(cardNumber.replace(/\s/g, ''));
         },
         message: 'Please provide a valid card number'
       }
@@ -201,7 +202,7 @@ const enrollmentSchema = new mongoose.Schema({
       validate: {
         validator: function(cardExpiry) {
           if (this.paymentMethod !== 'credit-card') return true;
-          return /^(0[1-9]|1[0-2])\/([0-9]{2})$/.test(cardExpiry);
+          return cardExpiry && /^(0[1-9]|1[0-2])\/([0-9]{2})$/.test(cardExpiry);
         },
         message: 'Please provide a valid expiry date (MM/YY)'
       }
@@ -211,7 +212,7 @@ const enrollmentSchema = new mongoose.Schema({
       validate: {
         validator: function(cardCvv) {
           if (this.paymentMethod !== 'credit-card') return true;
-          return /^\d{3,4}$/.test(cardCvv);
+          return cardCvv && /^\d{3,4}$/.test(cardCvv);
         },
         message: 'Please provide a valid CVV'
       }
@@ -278,6 +279,7 @@ const validateEnrollmentInput = (req, res, next) => {
     });
   }
   
+  // Only require payment details for credit card payments
   if (paymentMethod === 'credit-card' && !req.body.paymentDetails) {
     return res.status(400).json({ 
       message: 'Payment details are required for credit card payments' 
