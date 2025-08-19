@@ -22,8 +22,8 @@ app.use(hpp());
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 100,
   message: 'Too many requests from this IP, please try again later.'
 });
 app.use('/api/', limiter);
@@ -31,11 +31,30 @@ app.use('/api/', limiter);
 // Compression middleware
 app.use(compression());
 
-// CORS configuration
+// CORS configuration - updated for frontend compatibility
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://your-frontend-domain.com'] 
-    : ['http://localhost:3000', 'http://127.0.0.1:3000'],
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl requests)
+    if (!origin) return callback(null, true);
+    
+    // Allow all origins in development
+    if (process.env.NODE_ENV !== 'production') {
+      return callback(null, true);
+    }
+    
+    // Allow your frontend domains in production
+    const allowedOrigins = [
+      'https://citation-training-academy.onrender.com',
+      'http://localhost:3000',
+      'http://127.0.0.1:3000'
+    ];
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true
 }));
 
@@ -43,30 +62,40 @@ app.use(cors({
 app.use(bodyParser.json({ limit: '10kb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '10kb' }));
 
-// MongoDB connection with improved options
+// MongoDB connection with corrected options
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://elvismwangike:JFJmHvP4ktikRYDC@cluster0.vm6hrog.mongodb.net/citation_training?retryWrites=true&w=majority&appName=Cluster0';
 
-mongoose.connect(MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-  serverSelectionTimeoutMS: 5000,
-  socketTimeoutMS: 45000,
-  bufferMaxEntries: 0,
-  bufferCommands: false,
-});
+// Improved MongoDB connection with better error handling
+const connectDB = async () => {
+  try {
+    await mongoose.connect(MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+    });
+    console.log('Connected to MongoDB successfully');
+  } catch (error) {
+    console.error('MongoDB connection error:', error);
+    // Don't exit process in production, let the server try to reconnect
+    if (process.env.NODE_ENV === 'development') {
+      process.exit(1);
+    }
+  }
+};
+
+connectDB();
 
 const db = mongoose.connection;
 db.on('error', (error) => {
   console.error('MongoDB connection error:', error);
-  if (error.name === 'MongoNetworkError') {
-    console.error('Network error connecting to MongoDB. Please check your connection.');
-  }
 });
-db.once('open', () => {
-  console.log('Connected to MongoDB successfully');
+db.on('disconnected', () => {
+  console.log('MongoDB disconnected. Attempting to reconnect...');
+  setTimeout(() => connectDB(), 5000);
 });
 
-// Enhanced Enrollment Schema with validation
+// Enrollment Schema
 const enrollmentSchema = new mongoose.Schema({
   personalInfo: {
     firstName: {
@@ -244,14 +273,7 @@ const enrollmentSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   }
-}, {
-  timestamps: true
 });
-
-// Index for better query performance
-enrollmentSchema.index({ email: 1 });
-enrollmentSchema.index({ status: 1 });
-enrollmentSchema.index({ timestamp: -1 });
 
 const Enrollment = mongoose.model('Enrollment', enrollmentSchema);
 
@@ -274,9 +296,16 @@ const validateEnrollmentInput = (req, res, next) => {
   next();
 };
 
-// Routes with improved error handling
+// Routes
 app.post('/api/enroll', validateEnrollmentInput, async (req, res) => {
   try {
+    // Check MongoDB connection
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ 
+        message: 'Database not available. Please try again later.' 
+      });
+    }
+    
     const enrollmentData = req.body;
     
     // Create new enrollment
@@ -306,12 +335,6 @@ app.post('/api/enroll', validateEnrollmentInput, async (req, res) => {
       });
     }
     
-    if (error.code === 11000) {
-      return res.status(400).json({ 
-        message: 'Duplicate enrollment detected' 
-      });
-    }
-    
     res.status(500).json({ 
       message: 'Error processing enrollment', 
       error: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message 
@@ -321,23 +344,15 @@ app.post('/api/enroll', validateEnrollmentInput, async (req, res) => {
 
 app.get('/api/enrollments', async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const skip = (page - 1) * limit;
+    // Check MongoDB connection
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ 
+        message: 'Database not available. Please try again later.' 
+      });
+    }
     
-    const enrollments = await Enrollment.find()
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
-    
-    const total = await Enrollment.countDocuments();
-    
-    res.json({
-      enrollments,
-      currentPage: page,
-      totalPages: Math.ceil(total / limit),
-      totalEnrollments: total
-    });
+    const enrollments = await Enrollment.find().sort({ timestamp: -1 });
+    res.json(enrollments);
   } catch (error) {
     console.error('Error fetching enrollments:', error);
     res.status(500).json({ 
@@ -349,15 +364,17 @@ app.get('/api/enrollments', async (req, res) => {
 
 app.get('/api/enrollment/:id', async (req, res) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ message: 'Invalid enrollment ID' });
+    // Check MongoDB connection
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ 
+        message: 'Database not available. Please try again later.' 
+      });
     }
     
     const enrollment = await Enrollment.findById(req.params.id);
     if (!enrollment) {
       return res.status(404).json({ message: 'Enrollment not found' });
     }
-    
     res.json(enrollment);
   } catch (error) {
     console.error('Error fetching enrollment:', error);
@@ -370,6 +387,13 @@ app.get('/api/enrollment/:id', async (req, res) => {
 
 app.put('/api/enrollment/:id/status', async (req, res) => {
   try {
+    // Check MongoDB connection
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ 
+        message: 'Database not available. Please try again later.' 
+      });
+    }
+    
     const { status } = req.body;
     
     if (!status || !['pending', 'approved', 'rejected', 'completed'].includes(status)) {
@@ -378,14 +402,10 @@ app.put('/api/enrollment/:id/status', async (req, res) => {
       });
     }
     
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
-      return res.status(400).json({ message: 'Invalid enrollment ID' });
-    }
-    
     const enrollment = await Enrollment.findByIdAndUpdate(
       req.params.id,
       { status },
-      { new: true, runValidators: true }
+      { new: true }
     );
     
     if (!enrollment) {
@@ -398,15 +418,6 @@ app.put('/api/enrollment/:id/status', async (req, res) => {
     });
   } catch (error) {
     console.error('Error updating enrollment status:', error);
-    
-    if (error.name === 'ValidationError') {
-      const errors = Object.values(error.errors).map(el => el.message);
-      return res.status(400).json({ 
-        message: 'Invalid status value', 
-        errors 
-      });
-    }
-    
     res.status(500).json({ 
       message: 'Error updating enrollment status', 
       error: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message 
@@ -414,33 +425,32 @@ app.put('/api/enrollment/:id/status', async (req, res) => {
   }
 });
 
-// Health check endpoint with DB status
+// Health check endpoint
 app.get('/api/health', async (req, res) => {
   const healthCheck = {
     status: 'OK',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    database: 'Disconnected'
+    database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
+    uptime: process.uptime()
   };
   
-  try {
-    // Check database connection
-    if (mongoose.connection.readyState === 1) {
-      healthCheck.database = 'Connected';
-      
-      // Test a simple query
-      await Enrollment.findOne().limit(1);
-      healthCheck.database = 'Healthy';
+  res.status(healthCheck.database === 'Connected' ? 200 : 503).json(healthCheck);
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Citation Training Academy Backend API',
+    version: '1.0.0',
+    status: 'OK',
+    endpoints: {
+      enroll: 'POST /api/enroll',
+      enrollments: 'GET /api/enrollments',
+      enrollment: 'GET /api/enrollment/:id',
+      updateStatus: 'PUT /api/enrollment/:id/status',
+      health: 'GET /api/health'
     }
-    
-    res.json(healthCheck);
-  } catch (error) {
-    healthCheck.status = 'Unhealthy';
-    healthCheck.database = 'Error';
-    healthCheck.error = error.message;
-    
-    res.status(503).json(healthCheck);
-  }
+  });
 });
 
 // 404 handler for API routes
@@ -457,31 +467,6 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('SIGINT received. Shutting down gracefully...');
-  try {
-    await mongoose.connection.close();
-    console.log('MongoDB connection closed.');
-    process.exit(0);
-  } catch (error) {
-    console.error('Error during shutdown:', error);
-    process.exit(1);
-  }
-});
-
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received. Shutting down gracefully...');
-  try {
-    await mongoose.connection.close();
-    console.log('MongoDB connection closed.');
-    process.exit(0);
-  } catch (error) {
-    console.error('Error during shutdown:', error);
-    process.exit(1);
-  }
-});
-
 // Start server
 const server = app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
@@ -493,5 +478,13 @@ process.on('unhandledRejection', (err) => {
   console.log(err.name, err.message);
   server.close(() => {
     process.exit(1);
+  });
+});
+
+// Handle SIGTERM for graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received. Shutting down gracefully...');
+  server.close(() => {
+    console.log('Process terminated');
   });
 });
