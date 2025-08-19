@@ -1,163 +1,94 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const fs = require('fs');
-const path = require('path');
+require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(express.static('public'));
 
-// In-memory storage (in production, use a database)
-let enrollments = [];
-const ENROLLMENTS_FILE = 'enrollments.json';
+// MongoDB Connection
+mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://elvismwangike:JFJmHvP4ktikRYDC@cluster0.vm6hrog.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0', {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+});
 
-// Load existing enrollments if file exists
-if (fs.existsSync(ENROLLMENTS_FILE)) {
-    try {
-        const data = fs.readFileSync(ENROLLMENTS_FILE, 'utf8');
-        enrollments = JSON.parse(data);
-    } catch (err) {
-        console.error('Error reading enrollments file:', err);
-    }
-}
+const db = mongoose.connection;
+db.on('error', console.error.bind(console, 'MongoDB connection error:'));
+db.once('open', () => {
+    console.log('Connected to MongoDB');
+});
 
-// Save enrollments to file
-function saveEnrollments() {
-    try {
-        fs.writeFileSync(ENROLLMENTS_FILE, JSON.stringify(enrollments, null, 2));
-    } catch (err) {
-        console.error('Error saving enrollments:', err);
-    }
-}
+// Enrollment Schema
+const enrollmentSchema = new mongoose.Schema({
+    firstName: { type: String, required: true },
+    lastName: { type: String, required: true },
+    email: { type: String, required: true },
+    phone: { type: String, required: true },
+    dob: { type: Date, required: true },
+    certificateNumber: { type: String, required: true },
+    street: { type: String, required: true },
+    city: { type: String, required: true },
+    state: { type: String, required: true },
+    zip: { type: String, required: true },
+    country: { type: String, required: true },
+    program: { type: String, required: true },
+    paymentMethod: { type: String, required: true },
+    cardNumber: { type: String },
+    cardName: { type: String },
+    cardExpiry: { type: String },
+    cardCvv: { type: String },
+    amount: { type: Number },
+    timestamp: { type: Date, default: Date.now }
+});
+
+const Enrollment = mongoose.model('Enrollment', enrollmentSchema);
 
 // Routes
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// Get all enrollments (for admin purposes)
-app.get('/api/enrollments', (req, res) => {
-    res.json(enrollments);
-});
-
-// Submit new enrollment
-app.post('/api/enroll', (req, res) => {
+app.post('/api/enroll', async (req, res) => {
     try {
-        const {
-            firstName,
-            lastName,
-            email,
-            phone,
-            address,
-            dob,
-            pilotLicense,
-            flightHours,
-            preferredDate,
-            message
-        } = req.body;
-
-        // Basic validation
-        if (!firstName || !lastName || !email || !phone || !address || !dob || !pilotLicense || !flightHours || !preferredDate) {
-            return res.status(400).json({ 
-                success: false, 
-                message: 'All required fields must be filled' 
-            });
-        }
-
-        // Create enrollment object
-        const enrollment = {
-            id: Date.now().toString(),
-            firstName,
-            lastName,
-            email,
-            phone,
-            address,
-            dob,
-            pilotLicense,
-            flightHours: parseInt(flightHours),
-            preferredDate,
-            message: message || '',
-            enrollmentDate: new Date().toISOString(),
-            status: 'pending'
-        };
-
-        // Add to enrollments array
-        enrollments.push(enrollment);
+        const enrollmentData = req.body;
         
-        // Save to file
-        saveEnrollments();
-
-        // In a real application, you would:
-        // 1. Save to a database
-        // 2. Send confirmation email
-        // 3. Process payment, etc.
-
-        res.json({ 
-            success: true, 
-            message: 'Enrollment submitted successfully',
-            enrollmentId: enrollment.id
+        // Calculate amount based on program
+        if (enrollmentData.program === 'cj1') {
+            enrollmentData.amount = 24500;
+        } else if (enrollmentData.program === 'cj3') {
+            enrollmentData.amount = 29750;
+        }
+        
+        const enrollment = new Enrollment(enrollmentData);
+        await enrollment.save();
+        
+        res.status(201).json({ 
+            message: 'Enrollment submitted successfully', 
+            id: enrollment._id 
         });
     } catch (error) {
-        console.error('Enrollment error:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Internal server error' 
-        });
+        console.error('Error saving enrollment:', error);
+        res.status(500).json({ message: 'Error processing enrollment' });
     }
 });
 
-// Get specific enrollment by ID
-app.get('/api/enrollment/:id', (req, res) => {
-    const enrollment = enrollments.find(e => e.id === req.params.id);
-    
-    if (!enrollment) {
-        return res.status(404).json({ 
-            success: false, 
-            message: 'Enrollment not found' 
-        });
+app.get('/api/enrollments', async (req, res) => {
+    try {
+        const enrollments = await Enrollment.find().sort({ timestamp: -1 });
+        res.json(enrollments);
+    } catch (error) {
+        console.error('Error fetching enrollments:', error);
+        res.status(500).json({ message: 'Error fetching enrollments' });
     }
-    
-    res.json({ 
-        success: true, 
-        enrollment 
-    });
 });
 
-// Update enrollment status
-app.put('/api/enrollment/:id/status', (req, res) => {
-    const { status } = req.body;
-    const enrollmentIndex = enrollments.findIndex(e => e.id === req.params.id);
-    
-    if (enrollmentIndex === -1) {
-        return res.status(404).json({ 
-            success: false, 
-            message: 'Enrollment not found' 
-        });
-    }
-    
-    if (!['pending', 'approved', 'rejected', 'completed'].includes(status)) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'Invalid status' 
-        });
-    }
-    
-    enrollments[enrollmentIndex].status = status;
-    saveEnrollments();
-    
-    res.json({ 
-        success: true, 
-        message: 'Status updated successfully' 
-    });
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// Start server
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Server is running on port ${PORT}`);
 });
