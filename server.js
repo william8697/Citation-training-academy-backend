@@ -1,482 +1,724 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const bodyParser = require('body-parser');
-const helmet = require('helmet');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
-const mongoSanitize = require('express-mongo-sanitize');
-const xss = require('xss-clean');
-const hpp = require('hpp');
-const compression = require('compression');
+const helmet = require('helmet');
+const { body, validationResult } = require('express-validator');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/algracia_pos';
 
 // Security middleware
 app.use(helmet());
-app.use(mongoSanitize());
-app.use(xss());
-app.use(hpp());
+app.use(cors({
+  origin: process.env.FRONTEND_URL || "http://localhost:3000",
+  credentials: true
+}));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: 'Too many requests from this IP, please try again later.'
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100 // limit each IP to 100 requests per windowMs
 });
-app.use('/api/', limiter);
+app.use(limiter);
 
-// Compression middleware
-app.use(compression());
+// Body parsing middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Updated CORS configuration to allow your frontend
-app.use(cors({
-  origin: [
-    'https://citation-training-academy.vercel.app',
-    'https://citation-training-academy.onrender.com',
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-    'http://localhost:8000',
-    'http://127.0.0.1:8000'
-  ],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-}));
+// MongoDB connection
+mongoose.connect(MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+})
+.then(() => console.log('MongoDB connected successfully'))
+.catch(err => console.error('MongoDB connection error:', err));
 
-// Handle preflight requests
-app.options('*', cors());
+// MongoDB Schemas
+const UserSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  role: { type: String, enum: ['admin', 'cashier'], default: 'cashier' },
+  fullName: { type: String, required: true },
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
 
-// Body parser middleware
-app.use(bodyParser.json({ limit: '10kb' }));
-app.use(bodyParser.urlencoded({ extended: true, limit: '10kb' }));
+const ProductSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  description: { type: String },
+  price: { type: Number, required: true, min: 0 },
+  cost: { type: Number, min: 0 },
+  barcode: { type: String, unique: true, sparse: true },
+  category: { type: String, default: 'cosmetics' },
+  stock: { type: Number, default: 0, min: 0 },
+  minStock: { type: Number, default: 5, min: 0 },
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
 
-// MongoDB connection with corrected options
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://elvismwangike:JFJmHvP4ktikRYDC@cluster0.vm6hrog.mongodb.net/citation_training?retryWrites=true&w=majority&appName=Cluster0';
+const TransactionSchema = new mongoose.Schema({
+  items: [{
+    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+    quantity: { type: Number, required: true, min: 1 },
+    price: { type: Number, required: true, min: 0 }
+  }],
+  total: { type: Number, required: true, min: 0 },
+  tax: { type: Number, default: 0 },
+  discount: { type: Number, default: 0 },
+  paymentMethod: { type: String, enum: ['cash', 'card', 'mobile'], default: 'cash' },
+  cashier: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  status: { type: String, enum: ['completed', 'refunded', 'pending'], default: 'completed' },
+  createdAt: { type: Date, default: Date.now }
+});
 
-// Improved MongoDB connection with better error handling
-const connectDB = async () => {
+const InventoryLogSchema = new mongoose.Schema({
+  product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+  change: { type: Number, required: true }, // Positive for addition, negative for deduction
+  reason: { type: String, required: true }, // sale, restock, adjustment, etc.
+  reference: { type: mongoose.Schema.Types.ObjectId, refPath: 'refModel' },
+  refModel: { type: String, enum: ['Transaction', 'User'] },
+  performedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// Models
+const User = mongoose.model('User', UserSchema);
+const Product = mongoose.model('Product', ProductSchema);
+const Transaction = mongoose.model('Transaction', TransactionSchema);
+const InventoryLog = mongoose.model('InventoryLog', InventoryLogSchema);
+
+// Authentication middleware
+const authenticateToken = async (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
   try {
-    await mongoose.connect(MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 45000,
-    });
-    console.log('Connected to MongoDB successfully');
-  } catch (error) {
-    console.error('MongoDB connection error:', error);
-    // Don't exit process in production, let the server try to reconnect
-    if (process.env.NODE_ENV === 'development') {
-      process.exit(1);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret');
+    const user = await User.findById(decoded.userId).select('-password');
+    if (!user || !user.isActive) {
+      return res.status(403).json({ error: 'User not found or inactive' });
     }
+    req.user = user;
+    next();
+  } catch (error) {
+    return res.status(403).json({ error: 'Invalid or expired token' });
   }
 };
 
-connectDB();
-
-const db = mongoose.connection;
-db.on('error', (error) => {
-  console.error('MongoDB connection error:', error);
-});
-db.on('disconnected', () => {
-  console.log('MongoDB disconnected. Attempting to reconnect...');
-  setTimeout(() => connectDB(), 5000);
-});
-
-// Enrollment Schema
-const enrollmentSchema = new mongoose.Schema({
-  personalInfo: {
-    firstName: {
-      type: String,
-      required: [true, 'First name is required'],
-      trim: true,
-      maxlength: [50, 'First name cannot be more than 50 characters']
-    },
-    lastName: {
-      type: String,
-      required: [true, 'Last name is required'],
-      trim: true,
-      maxlength: [50, 'Last name cannot be more than 50 characters']
-    },
-    email: {
-      type: String,
-      required: [true, 'Email is required'],
-      lowercase: true,
-      validate: {
-        validator: function(email) {
-          return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-        },
-        message: 'Please provide a valid email'
-      }
-    },
-    phone: {
-      type: String,
-      required: [true, 'Phone number is required'],
-      validate: {
-        validator: function(phone) {
-          return /^[+]?[1-9][\d]{0,15}$/.test(phone);
-        },
-        message: 'Please provide a valid phone number'
-      }
-    },
-    address: {
-      type: String,
-      required: [true, 'Address is required'],
-      trim: true,
-      maxlength: [200, 'Address cannot be more than 200 characters']
-    },
-    city: {
-      type: String,
-      required: [true, 'City is required'],
-      trim: true,
-      maxlength: [50, 'City cannot be more than 50 characters']
-    },
-    state: {
-      type: String,
-      required: [true, 'State is required'],
-      trim: true,
-      maxlength: [50, 'State cannot be more than 50 characters']
-    },
-    postalCode: {
-      type: String,
-      required: [true, 'Postal code is required'],
-      trim: true,
-      maxlength: [20, 'Postal code cannot be more than 20 characters']
-    },
-    country: {
-      type: String,
-      required: [true, 'Country is required'],
-      trim: true,
-      maxlength: [50, 'Country cannot be more than 50 characters']
-    },
-    pilotLicense: {
-      type: String,
-      required: [true, 'Pilot license information is required'],
-      enum: {
-        values: ['private', 'commercial', 'atp', 'none'],
-        message: 'Pilot license must be private, commercial, atp, or none'
-      }
-    },
-    flightHours: {
-      type: Number,
-      required: [true, 'Flight hours are required'],
-      min: [0, 'Flight hours cannot be negative'],
-      max: [50000, 'Flight hours cannot exceed 50,000']
+// Authorization middleware
+const requireRole = (role) => {
+  return (req, res, next) => {
+    if (req.user.role !== role) {
+      return res.status(403).json({ error: 'Insufficient permissions' });
     }
-  },
-  paymentMethod: {
-    type: String,
-    required: [true, 'Payment method is required'],
-    enum: {
-      values: ['credit-card', 'bitcoin'],
-      message: 'Payment method must be credit-card or bitcoin'
-    }
-  },
-  paymentDetails: {
-    cardNumber: {
-      type: String,
-      validate: {
-        validator: function(cardNumber) {
-          // Only validate if payment method is credit-card AND cardNumber exists
-          if (this.paymentMethod !== 'credit-card') return true;
-          return cardNumber && /^\d{16}$/.test(cardNumber.replace(/\s/g, ''));
-        },
-        message: 'Please provide a valid card number'
-      }
-    },
-    cardHolder: {
-      type: String,
-      validate: {
-        validator: function(cardHolder) {
-          if (this.paymentMethod !== 'credit-card') return true;
-          return cardHolder && cardHolder.length >= 3;
-        },
-        message: 'Please provide a valid card holder name'
-      }
-    },
-    cardExpiry: {
-      type: String,
-      validate: {
-        validator: function(cardExpiry) {
-          if (this.paymentMethod !== 'credit-card') return true;
-          return cardExpiry && /^(0[1-9]|1[0-2])\/([0-9]{2})$/.test(cardExpiry);
-        },
-        message: 'Please provide a valid expiry date (MM/YY)'
-      }
-    },
-    cardCvv: {
-      type: String,
-      validate: {
-        validator: function(cardCvv) {
-          if (this.paymentMethod !== 'credit-card') return true;
-          return cardCvv && /^\d{3,4}$/.test(cardCvv);
-        },
-        message: 'Please provide a valid CVV'
-      }
-    },
-    billingAddress: {
-      type: String,
-      validate: {
-        validator: function(billingAddress) {
-          if (this.paymentMethod !== 'credit-card') return true;
-          return billingAddress && billingAddress.length >= 5;
-        },
-        message: 'Please provide a valid billing address'
-      }
-    },
-    billingCity: {
-      type: String,
-      validate: {
-        validator: function(billingCity) {
-          if (this.paymentMethod !== 'credit-card') return true;
-          return billingCity && billingCity.length >= 2;
-        },
-        message: 'Please provide a valid billing city'
-      }
-    },
-    billingPostalCode: {
-      type: String,
-      validate: {
-        validator: function(billingPostalCode) {
-          if (this.paymentMethod !== 'credit-card') return true;
-          return billingPostalCode && billingPostalCode.length >= 3;
-        },
-        message: 'Please provide a valid billing postal code'
-      }
-    }
-  },
-  amount: {
-    type: Number,
-    required: [true, 'Amount is required'],
-    min: [0, 'Amount cannot be negative']
-  },
-  status: { 
-    type: String, 
-    enum: {
-      values: ['pending', 'approved', 'rejected', 'completed'],
-      message: 'Status must be pending, approved, rejected, or completed'
-    },
-    default: 'pending' 
-  },
-  timestamp: {
-    type: Date,
-    default: Date.now
-  }
-});
+    next();
+  };
+};
 
-const Enrollment = mongoose.model('Enrollment', enrollmentSchema);
-
-// Input validation middleware
-const validateEnrollmentInput = (req, res, next) => {
-  const { personalInfo, paymentMethod, amount } = req.body;
-  
-  if (!personalInfo || !paymentMethod || amount === undefined) {
-    return res.status(400).json({ 
-      message: 'Missing required fields: personalInfo, paymentMethod, or amount' 
-    });
+// Validation middleware
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
   }
-  
-  // Only require payment details for credit card payments
-  if (paymentMethod === 'credit-card' && !req.body.paymentDetails) {
-    return res.status(400).json({ 
-      message: 'Payment details are required for credit card payments' 
-    });
-  }
-  
   next();
 };
 
 // Routes
-app.post('/api/enroll', validateEnrollmentInput, async (req, res) => {
+
+// Auth routes
+app.post('/api/auth/login', [
+  body('username').notEmpty().withMessage('Username is required'),
+  body('password').notEmpty().withMessage('Password is required')
+], handleValidationErrors, async (req, res) => {
   try {
-    // Check MongoDB connection
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ 
-        message: 'Database not available. Please try again later.' 
-      });
+    const { username, password } = req.body;
+    
+    const user = await User.findOne({ username, isActive: true });
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' });
     }
-    
-    const enrollmentData = req.body;
-    
-    // Create new enrollment
-    const newEnrollment = new Enrollment({
-      personalInfo: enrollmentData.personalInfo,
-      paymentMethod: enrollmentData.paymentMethod,
-      paymentDetails: enrollmentData.paymentDetails || {},
-      amount: enrollmentData.amount
-    });
-    
-    // Save to database
-    await newEnrollment.save();
-    
-    res.status(201).json({
-      message: 'Enrollment submitted successfully',
-      enrollmentId: newEnrollment._id,
-      status: newEnrollment.status
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const token = jwt.sign(
+      { userId: user._id, role: user.role },
+      process.env.JWT_SECRET || 'fallback_secret',
+      { expiresIn: '8h' }
+    );
+
+    res.json({
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        role: user.role,
+        fullName: user.fullName
+      }
     });
   } catch (error) {
-    console.error('Error saving enrollment:', error);
-    
-    if (error.name === 'ValidationError') {
-      const errors = Object.values(error.errors).map(el => el.message);
-      return res.status(400).json({ 
-        message: 'Invalid input data', 
-        errors 
-      });
-    }
-    
-    res.status(500).json({ 
-      message: 'Error processing enrollment', 
-      error: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message 
-    });
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-app.get('/api/enrollments', async (req, res) => {
+// Product routes
+app.get('/api/products', authenticateToken, async (req, res) => {
   try {
-    // Check MongoDB connection
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ 
-        message: 'Database not available. Please try again later.' 
-      });
+    const { search, category, lowStock } = req.query;
+    let query = { isActive: true };
+
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { barcode: search }
+      ];
     }
-    
-    const enrollments = await Enrollment.find().sort({ timestamp: -1 });
-    res.json(enrollments);
+
+    if (category && category !== 'all') {
+      query.category = category;
+    }
+
+    if (lowStock === 'true') {
+      query.$expr = { $lte: ['$stock', '$minStock'] };
+    }
+
+    const products = await Product.find(query).sort({ name: 1 });
+    res.json(products);
   } catch (error) {
-    console.error('Error fetching enrollments:', error);
-    res.status(500).json({ 
-      message: 'Error fetching enrollments', 
-      error: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message 
-    });
+    console.error('Get products error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-app.get('/api/enrollment/:id', async (req, res) => {
+app.get('/api/products/:id', authenticateToken, async (req, res) => {
   try {
-    // Check MongoDB connection
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ 
-        message: 'Database not available. Please try again later.' 
-      });
+    const product = await Product.findById(req.params.id);
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
     }
-    
-    const enrollment = await Enrollment.findById(req.params.id);
-    if (!enrollment) {
-      return res.status(404).json({ message: 'Enrollment not found' });
-    }
-    res.json(enrollment);
+    res.json(product);
   } catch (error) {
-    console.error('Error fetching enrollment:', error);
-    res.status(500).json({ 
-      message: 'Error fetching enrollment', 
-      error: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message 
-    });
+    console.error('Get product error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-app.put('/api/enrollment/:id/status', async (req, res) => {
+app.post('/api/products', [
+  authenticateToken,
+  requireRole('admin'),
+  body('name').notEmpty().withMessage('Product name is required'),
+  body('price').isFloat({ min: 0 }).withMessage('Price must be a positive number'),
+  body('stock').isInt({ min: 0 }).withMessage('Stock must be a non-negative integer')
+], handleValidationErrors, async (req, res) => {
   try {
-    // Check MongoDB connection
-    if (mongoose.connection.readyState !== 1) {
-      return res.status(503).json({ 
-        message: 'Database not available. Please try again later.' 
-      });
+    const productData = req.body;
+    productData.updatedAt = new Date();
+    
+    const product = new Product(productData);
+    await product.save();
+    
+    res.status(201).json(product);
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ error: 'Barcode already exists' });
     }
+    console.error('Create product error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/products/:id', [
+  authenticateToken,
+  requireRole('admin'),
+  body('name').notEmpty().withMessage('Product name is required'),
+  body('price').isFloat({ min: 0 }).withMessage('Price must be a positive number'),
+  body('stock').isInt({ min: 0 }).withMessage('Stock must be a non-negative integer')
+], handleValidationErrors, async (req, res) => {
+  try {
+    const productData = req.body;
+    productData.updatedAt = new Date();
     
-    const { status } = req.body;
-    
-    if (!status || !['pending', 'approved', 'rejected', 'completed'].includes(status)) {
-      return res.status(400).json({ 
-        message: 'Valid status is required: pending, approved, rejected, or completed' 
-      });
-    }
-    
-    const enrollment = await Enrollment.findByIdAndUpdate(
+    const product = await Product.findByIdAndUpdate(
       req.params.id,
-      { status },
+      productData,
+      { new: true, runValidators: true }
+    );
+    
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    
+    res.json(product);
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ error: 'Barcode already exists' });
+    }
+    console.error('Update product error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/api/products/:id', [authenticateToken, requireRole('admin')], async (req, res) => {
+  try {
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      { isActive: false, updatedAt: new Date() },
       { new: true }
     );
     
-    if (!enrollment) {
-      return res.status(404).json({ message: 'Enrollment not found' });
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
     }
     
-    res.json({ 
-      message: 'Status updated successfully', 
-      enrollment 
-    });
+    res.json({ message: 'Product deleted successfully' });
   } catch (error) {
-    console.error('Error updating enrollment status:', error);
-    res.status(500).json({ 
-      message: 'Error updating enrollment status', 
-      error: process.env.NODE_ENV === 'production' ? 'Internal server error' : error.message 
-    });
+    console.error('Delete product error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Health check endpoint
-app.get('/api/health', async (req, res) => {
-  const healthCheck = {
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    database: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
-    uptime: process.uptime()
-  };
-  
-  res.status(healthCheck.database === 'Connected' ? 200 : 503).json(healthCheck);
-});
-
-// Root endpoint
-app.get('/', (req, res) => {
-  res.json({ 
-    message: 'Citation Training Academy Backend API',
-    version: '1.0.0',
-    status: 'OK',
-    endpoints: {
-      enroll: 'POST /api/enroll',
-      enrollments: 'GET /api/enrollments',
-      enrollment: 'GET /api/enrollment/:id',
-      updateStatus: 'PUT /api/enrollment/:id/status',
-      health: 'GET /api/health'
+// POS routes
+app.post('/api/pos/scan', [
+  authenticateToken,
+  body('barcode').notEmpty().withMessage('Barcode is required')
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { barcode } = req.body;
+    const product = await Product.findOne({ barcode, isActive: true });
+    
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
     }
-  });
+    
+    res.json(product);
+  } catch (error) {
+    console.error('Scan product error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// 404 handler for API routes
-app.use('/api/*', (req, res) => {
-  res.status(404).json({ message: 'API endpoint not found' });
+app.post('/api/pos/checkout', [
+  authenticateToken,
+  body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
+  body('items.*.productId').notEmpty().withMessage('Product ID is required'),
+  body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
+  body('paymentMethod').isIn(['cash', 'card', 'mobile']).withMessage('Invalid payment method')
+], handleValidationErrors, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const { items, paymentMethod, discount = 0, tax = 0 } = req.body;
+    const cashierId = req.user._id;
+    
+    // Calculate total and prepare transaction items
+    let total = 0;
+    const transactionItems = [];
+    const inventoryUpdates = [];
+    
+    for (const item of items) {
+      const product = await Product.findById(item.productId).session(session);
+      if (!product || !product.isActive) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({ error: `Product ${item.productId} not found` });
+      }
+      
+      if (product.stock < item.quantity) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ error: `Insufficient stock for ${product.name}` });
+      }
+      
+      const itemTotal = product.price * item.quantity;
+      total += itemTotal;
+      
+      transactionItems.push({
+        product: product._id,
+        quantity: item.quantity,
+        price: product.price
+      });
+      
+      // Prepare inventory update
+      inventoryUpdates.push({
+        updateOne: {
+          filter: { _id: product._id },
+          update: { $inc: { stock: -item.quantity }, $set: { updatedAt: new Date() } }
+        }
+      });
+      
+      // Prepare inventory log
+      inventoryUpdates.push({
+        insertOne: {
+          document: {
+            product: product._id,
+            change: -item.quantity,
+            reason: 'sale',
+            reference: null, // Will be updated after transaction creation
+            refModel: 'Transaction',
+            performedBy: cashierId,
+            createdAt: new Date()
+          }
+        }
+      });
+    }
+    
+    // Apply discount and tax
+    total = total - discount + (total * (tax / 100));
+    
+    // Create transaction
+    const transaction = new Transaction({
+      items: transactionItems,
+      total,
+      tax,
+      discount,
+      paymentMethod,
+      cashier: cashierId,
+      status: 'completed'
+    });
+    
+    await transaction.save({ session });
+    
+    // Update inventory logs with transaction reference
+    const inventoryLogs = inventoryUpdates.filter(update => update.insertOne);
+    for (const log of inventoryLogs) {
+      if (log.insertOne && log.insertOne.document) {
+        log.insertOne.document.reference = transaction._id;
+      }
+    }
+    
+    // Execute all inventory updates
+    if (inventoryUpdates.length > 0) {
+      await InventoryLog.bulkWrite(inventoryUpdates, { session });
+    }
+    
+    await session.commitTransaction();
+    session.endSession();
+    
+    res.status(201).json({
+      message: 'Transaction completed successfully',
+      transactionId: transaction._id,
+      total: transaction.total
+    });
+    
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error('Checkout error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-// Global error handling middleware
-app.use((error, req, res, next) => {
-  console.error('Unhandled error:', error);
-  res.status(500).json({ 
-    message: 'Internal server error', 
-    error: process.env.NODE_ENV === 'production' ? 'Something went wrong' : error.message 
-  });
+// Transaction routes
+app.get('/api/transactions', authenticateToken, async (req, res) => {
+  try {
+    const { page = 1, limit = 50, startDate, endDate } = req.query;
+    const query = {};
+    
+    if (startDate && endDate) {
+      query.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+    
+    const options = {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      sort: { createdAt: -1 },
+      populate: [
+        { path: 'cashier', select: 'fullName' },
+        { path: 'items.product', select: 'name barcode' }
+      ]
+    };
+    
+    const transactions = await Transaction.paginate(query, options);
+    res.json(transactions);
+  } catch (error) {
+    console.error('Get transactions error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
+
+app.get('/api/transactions/:id', authenticateToken, async (req, res) => {
+  try {
+    const transaction = await Transaction.findById(req.params.id)
+      .populate('cashier', 'fullName')
+      .populate('items.product', 'name barcode price');
+    
+    if (!transaction) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+    
+    res.json(transaction);
+  } catch (error) {
+    console.error('Get transaction error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Dashboard routes
+app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    // Today's sales
+    const todaySales = await Transaction.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: today, $lt: tomorrow },
+          status: 'completed'
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalSales: { $sum: '$total' },
+          transactionCount: { $sum: 1 }
+        }
+      }
+    ]);
+    
+    // Inventory stats
+    const inventoryStats = await Product.aggregate([
+      {
+        $match: { isActive: true }
+      },
+      {
+        $group: {
+          _id: null,
+          totalProducts: { $sum: 1 },
+          lowStockItems: {
+            $sum: {
+              $cond: [{ $lte: ['$stock', '$minStock'] }, 1, 0]
+            }
+          }
+        }
+      }
+    ]);
+    
+    // Format response
+    const result = {
+      totalSales: todaySales[0]?.totalSales || 0,
+      transactionCount: todaySales[0]?.transactionCount || 0,
+      totalProducts: inventoryStats[0]?.totalProducts || 0,
+      lowStockItems: inventoryStats[0]?.lowStockItems || 0
+    };
+    
+    res.json(result);
+  } catch (error) {
+    console.error('Dashboard stats error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Admin routes
+app.get('/api/admin/users', [authenticateToken, requireRole('admin')], async (req, res) => {
+  try {
+    const users = await User.find().select('-password').sort({ createdAt: -1 });
+    res.json(users);
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/admin/users', [
+  authenticateToken,
+  requireRole('admin'),
+  body('username').notEmpty().withMessage('Username is required'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+  body('fullName').notEmpty().withMessage('Full name is required'),
+  body('role').isIn(['admin', 'cashier']).withMessage('Role must be admin or cashier')
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { username, password, fullName, role } = req.body;
+    
+    // Check if user already exists
+    const existingUser = await User.findOne({ username });
+    if (existingUser) {
+      return res.status(400).json({ error: 'Username already exists' });
+    }
+    
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 12);
+    
+    // Create user
+    const user = new User({
+      username,
+      password: hashedPassword,
+      fullName,
+      role
+    });
+    
+    await user.save();
+    
+    res.status(201).json({
+      message: 'User created successfully',
+      user: {
+        id: user._id,
+        username: user.username,
+        role: user.role,
+        fullName: user.fullName,
+        isActive: user.isActive
+      }
+    });
+  } catch (error) {
+    console.error('Create user error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/admin/users/:id', [authenticateToken, requireRole('admin')], async (req, res) => {
+  try {
+    const { fullName, role, isActive } = req.body;
+    const updateData = { fullName, role, isActive };
+    
+    // Don't update password here
+    if (req.body.password) {
+      delete updateData.password;
+    }
+    
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true, runValidators: true }
+    ).select('-password');
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json({
+      message: 'User updated successfully',
+      user
+    });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Initialize admin user if not exists
+const initializeAdminUser = async () => {
+  try {
+    const adminExists = await User.findOne({ role: 'admin' });
+    if (!adminExists) {
+      const hashedPassword = await bcrypt.hash('admin123', 12);
+      const adminUser = new User({
+        username: 'admin',
+        password: hashedPassword,
+        fullName: 'System Administrator',
+        role: 'admin'
+      });
+      await adminUser.save();
+      console.log('Default admin user created: username=admin, password=admin123');
+    }
+  } catch (error) {
+    console.error('Error initializing admin user:', error);
+  }
+};
+
+// Add pagination plugin to mongoose
+mongoose.plugin(require('mongoose-paginate-v2'));
 
 // Start server
-const server = app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+app.listen(PORT, async () => {
+  console.log(`Server running on port ${PORT}`);
+  await initializeAdminUser();
+  
+  // Create some sample products if none exist
+  const productCount = await Product.countDocuments();
+  if (productCount === 0) {
+    const sampleProducts = [
+      {
+        name: "Hydrating Face Cream",
+        price: 24.99,
+        cost: 12.50,
+        barcode: "800123456789",
+        category: "skincare",
+        stock: 50,
+        minStock: 5
+      },
+      {
+        name: "Vitamin C Serum",
+        price: 34.99,
+        cost: 18.00,
+        barcode: "800123456790",
+        category: "skincare",
+        stock: 35,
+        minStock: 5
+      },
+      {
+        name: "Exfoliating Scrub",
+        price: 19.99,
+        cost: 9.50,
+        barcode: "800123456791",
+        category: "skincare",
+        stock: 40,
+        minStock: 5
+      },
+      {
+        name: "Anti-Aging Eye Cream",
+        price: 29.99,
+        cost: 14.00,
+        barcode: "800123456792",
+        category: "skincare",
+        stock: 25,
+        minStock: 3
+      },
+      {
+        name: "Hydrating Toner",
+        price: 16.99,
+        cost: 7.50,
+        barcode: "800123456793",
+        category: "skincare",
+        stock: 60,
+        minStock: 5
+      },
+      {
+        name: "Overnight Mask",
+        price: 26.50,
+        cost: 12.00,
+        barcode: "800123456794",
+        category: "skincare",
+        stock: 30,
+        minStock: 5
+      }
+    ];
+    
+    await Product.insertMany(sampleProducts);
+    console.log('Sample products created');
+  }
 });
 
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (err) => {
-  console.log('UNHANDLED REJECTION! 💥 Shutting down...');
-  console.log(err.name, err.message);
-  server.close(() => {
-    process.exit(1);
-  });
+// Error handling middleware
+app.use((error, req, res, next) => {
+  console.error('Unhandled error:', error);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
-// Handle SIGTERM for graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received. Shutting down gracefully...');
-  server.close(() => {
-    console.log('Process terminated');
-  });
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
 });
+
+module.exports = app;
