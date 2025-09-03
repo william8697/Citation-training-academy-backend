@@ -5,33 +5,23 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const redis = require('redis');
 const { body, validationResult } = require('express-validator');
-const moment = require('moment');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const axios = require('axios');
+const { createCanvas } = require('canvas');
+const jsbarcode = require('jsbarcode');
+const Quagga = require('quagga');
+const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || '17581758Na';
 
-// Redis Configuration
-const redisClient = redis.createClient({
-  host: process.env.REDIS_HOST || 'redis-14450.c276.us-east-1-2.ec2.redns.redis-cloud.com',
-  port: process.env.REDIS_PORT || 14450,
-  password: process.env.REDIS_PASSWORD || 'qjXgsg0YrsLaSumlEW9HkIZbvLjXEwXR'
-});
-
-redisClient.on('error', (err) => {
-  console.log('Redis Client Error', err);
-});
-
-redisClient.connect().then(() => {
-  console.log('Connected to Redis');
-});
-
 // MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://your-mongodb-uri';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/algracia_pos';
 mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
@@ -57,6 +47,7 @@ const UserSchema = new mongoose.Schema({
 const ProductSchema = new mongoose.Schema({
   name: { type: String, required: true },
   sku: { type: String, required: true, unique: true },
+  barcode: { type: String, unique: true, sparse: true },
   price: { type: Number, required: true },
   cost: { type: Number },
   stock: { type: Number, required: true },
@@ -134,18 +125,51 @@ const AuditLog = mongoose.model('AuditLog', AuditLogSchema);
 // Middleware
 app.use(helmet());
 app.use(cors({
-  origin: ['https://citation-training-academy.vercel.app', 'http://localhost:3000'],
+  origin: ['https://citation-training-academy.vercel.app', 'http://localhost:3000', 'http://localhost:5500'],
   credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use('/uploads', express.static('uploads'));
 
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
+  max: 1000 // limit each IP to 1000 requests per windowMs
 });
 app.use(limiter);
+
+// File upload configuration
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const dir = 'uploads/';
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    cb(null, dir);
+  },
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({ 
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  },
+  fileFilter: function (req, file, cb) {
+    const filetypes = /jpeg|jpg|png|gif/;
+    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = filetypes.test(file.mimetype);
+
+    if (mimetype && extname) {
+      return cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed'));
+    }
+  }
+});
 
 // Authentication middleware
 const authenticateToken = async (req, res, next) => {
@@ -226,15 +250,31 @@ const generateTransactionId = () => {
   return 'TXN' + Date.now() + Math.random().toString(36).substr(2, 9).toUpperCase();
 };
 
+// Generate barcode image
+const generateBarcode = (text) => {
+  const canvas = createCanvas(300, 100);
+  jsbarcode(canvas, text, {
+    format: 'CODE128',
+    displayValue: true,
+    fontSize: 16,
+    background: '#ffffff',
+    lineColor: '#000000',
+    margin: 10
+  });
+  
+  const barcodeData = canvas.toDataURL('image/png');
+  return barcodeData;
+};
+
 // Initialize default admin user
 const initializeDefaultAdmin = async () => {
   try {
-    const adminEmail = process.env.DEFAULT_ADMIN_EMAIL || 'admin@algracia.com';
+    const adminEmail = 'admin@algracia.com';
     const adminExists = await User.findOne({ email: adminEmail, role: 'admin' });
     
     if (!adminExists) {
       const saltRounds = 12;
-      const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'Admin@123';
+      const defaultPassword = 'Admin@123';
       const hashedPassword = await bcrypt.hash(defaultPassword, saltRounds);
       
       const adminUser = new User({
@@ -274,6 +314,79 @@ const initializeDefaultSettings = async () => {
   }
 };
 
+// Initialize sample products
+const initializeSampleProducts = async () => {
+  try {
+    const productCount = await Product.countDocuments();
+    if (productCount === 0) {
+      const sampleProducts = [
+        {
+          name: 'Algracia Moisturizing Cream',
+          sku: 'AGC001',
+          price: 25.99,
+          cost: 12.50,
+          stock: 50,
+          category: 'Skincare',
+          description: 'Premium moisturizing cream for all skin types',
+          lowStockThreshold: 10
+        },
+        {
+          name: 'Algracia Facial Cleanser',
+          sku: 'AFC002',
+          price: 18.50,
+          cost: 8.75,
+          stock: 75,
+          category: 'Skincare',
+          description: 'Gentle facial cleanser that removes impurities',
+          lowStockThreshold: 10
+        },
+        {
+          name: 'Algracia Lip Balm',
+          sku: 'ALB003',
+          price: 8.99,
+          cost: 3.25,
+          stock: 100,
+          category: 'Lip Care',
+          description: 'Hydrating lip balm with natural ingredients',
+          lowStockThreshold: 15
+        },
+        {
+          name: 'Algracia Body Lotion',
+          sku: 'ABL004',
+          price: 22.75,
+          cost: 10.50,
+          stock: 40,
+          category: 'Body Care',
+          description: 'Nourishing body lotion for smooth skin',
+          lowStockThreshold: 10
+        },
+        {
+          name: 'Algracia Face Serum',
+          sku: 'AFS005',
+          price: 34.99,
+          cost: 16.75,
+          stock: 30,
+          category: 'Skincare',
+          description: 'Anti-aging face serum with vitamin C',
+          lowStockThreshold: 5
+        }
+      ];
+
+      for (const productData of sampleProducts) {
+        const barcodeText = productData.sku + Math.random().toString(10).substr(2, 5);
+        productData.barcode = barcodeText;
+        
+        const product = new Product(productData);
+        await product.save();
+      }
+      
+      console.log('Sample products created successfully');
+    }
+  } catch (error) {
+    console.error('Error creating sample products:', error);
+  }
+};
+
 // Routes
 
 // Health check endpoint
@@ -283,12 +396,12 @@ app.get('/api/health', (req, res) => {
 
 // Authentication routes
 app.post('/api/auth/signup', [
-  body('firstName').notEmpty().withMessage('First name is required'),
-  body('lastName').notEmpty().withMessage('Last name is required'),
-  body('email').isEmail().withMessage('Valid email is required'),
+  body('firstName').notEmpty().trim().withMessage('First name is required'),
+  body('lastName').notEmpty().trim().withMessage('Last name is required'),
+  body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
   body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
-  body('company').notEmpty().withMessage('Company name is required'),
-  body('position').notEmpty().withMessage('Position is required')
+  body('company').notEmpty().trim().withMessage('Company name is required'),
+  body('position').notEmpty().trim().withMessage('Position is required')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -337,7 +450,7 @@ app.post('/api/auth/signup', [
 });
 
 app.post('/api/auth/login', [
-  body('email').isEmail().withMessage('Valid email is required'),
+  body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
   body('password').notEmpty().withMessage('Password is required')
 ], async (req, res) => {
   try {
@@ -381,20 +494,6 @@ app.post('/api/auth/login', [
       { expiresIn: '24h' }
     );
 
-    // Cache user data in Redis
-    const userData = {
-      id: user._id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      role: user.role,
-      company: user.company,
-      position: user.position,
-      initials: user.firstName[0] + user.lastName[0]
-    };
-
-    await redisClient.setEx(`user:${user._id}`, 86400, JSON.stringify(userData));
-
     // Log activity
     await logActivity({ user }, 'USER_LOGIN', `User logged in: ${email}`);
 
@@ -402,7 +501,16 @@ app.post('/api/auth/login', [
       success: true,
       message: 'Login successful',
       token,
-      user: userData
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        role: user.role,
+        company: user.company,
+        position: user.position,
+        initials: (user.firstName[0] + user.lastName[0]).toUpperCase()
+      }
     });
 
   } catch (error) {
@@ -422,9 +530,342 @@ app.post('/api/auth/verify', authenticateToken, (req, res) => {
       role: req.user.role,
       company: req.user.company,
       position: req.user.position,
-      initials: req.user.firstName[0] + req.user.lastName[0]
+      initials: (req.user.firstName[0] + req.user.lastName[0]).toUpperCase()
     }
   });
+});
+
+// Barcode scanning endpoint
+app.post('/api/scan/barcode', authenticateToken, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No image file provided' });
+    }
+
+    // In a real implementation, you would use a barcode scanning library
+    // For demonstration, we'll simulate scanning by looking for a barcode pattern in the filename
+    // In production, integrate with a proper barcode scanning library like quagga or dynamsoft
+    const filename = req.file.filename;
+    
+    // Simulate barcode detection (this is a placeholder)
+    // In a real implementation, you would process the image to detect barcodes
+    let barcode = null;
+    
+    // Check if this is a test barcode image
+    if (filename.includes('test-barcode')) {
+      barcode = 'TEST123456';
+    } else {
+      // For real implementation, you would use:
+      // const result = await scanBarcodeFromImage(req.file.path);
+      // barcode = result.code;
+      
+      // For now, we'll simulate a random barcode detection
+      barcode = 'AGC001' + Math.random().toString(10).substr(2, 5);
+    }
+
+    if (!barcode) {
+      return res.status(400).json({ success: false, message: 'No barcode detected in the image' });
+    }
+
+    // Find product by barcode
+    const product = await Product.findOne({ 
+      $or: [{ barcode: barcode }, { sku: barcode }] 
+    });
+
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found for this barcode' });
+    }
+
+    // Play beep sound (simulated in response)
+    res.json({
+      success: true,
+      message: 'Barcode scanned successfully',
+      beep: true,
+      product: {
+        id: product._id,
+        name: product.name,
+        sku: product.sku,
+        price: product.price,
+        stock: product.stock,
+        image: product.image
+      }
+    });
+
+  } catch (error) {
+    console.error('Barcode scan error:', error);
+    res.status(500).json({ success: false, message: 'Error scanning barcode' });
+  }
+});
+
+// Product lookup by barcode
+app.get('/api/products/barcode/:barcode', authenticateToken, async (req, res) => {
+  try {
+    const { barcode } = req.params;
+
+    const product = await Product.findOne({ 
+      $or: [{ barcode: barcode }, { sku: barcode }] 
+    });
+
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    res.json({
+      success: true,
+      product: {
+        id: product._id,
+        name: product.name,
+        sku: product.sku,
+        price: product.price,
+        stock: product.stock,
+        image: product.image
+      }
+    });
+  } catch (error) {
+    console.error('Product lookup error:', error);
+    res.status(500).json({ success: false, message: 'Error looking up product' });
+  }
+});
+
+// Generate barcode for a product
+app.post('/api/products/:id/barcode', authenticateToken, requireManager, async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    // Generate or update barcode
+    if (!product.barcode) {
+      product.barcode = product.sku + Math.random().toString(10).substr(2, 5);
+      await product.save();
+    }
+
+    // Generate barcode image
+    const barcodeData = generateBarcode(product.barcode);
+
+    res.json({
+      success: true,
+      barcode: product.barcode,
+      barcodeImage: barcodeData
+    });
+  } catch (error) {
+    console.error('Barcode generation error:', error);
+    res.status(500).json({ success: false, message: 'Error generating barcode' });
+  }
+});
+
+// Product routes
+app.get('/api/products', authenticateToken, async (req, res) => {
+  try {
+    const { category, lowStock, search } = req.query;
+    let filter = {};
+    
+    if (category && category !== 'all') filter.category = category;
+    if (lowStock === 'true') filter.stock = { $lte: 10 };
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { sku: { $regex: search, $options: 'i' } },
+        { barcode: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const products = await Product.find(filter).sort({ name: 1 });
+    res.json(products);
+  } catch (error) {
+    console.error('Products error:', error);
+    res.status(500).json({ success: false, message: 'Error loading products' });
+  }
+});
+
+app.get('/api/inventory', authenticateToken, async (req, res) => {
+  try {
+    const inventory = await Product.find().sort({ stock: 1 });
+    res.json(inventory);
+  } catch (error) {
+    console.error('Inventory error:', error);
+    res.status(500).json({ success: false, message: 'Error loading inventory' });
+  }
+});
+
+app.post('/api/products', authenticateToken, requireManager, upload.single('image'), [
+  body('name').notEmpty().withMessage('Product name is required'),
+  body('sku').notEmpty().withMessage('SKU is required'),
+  body('price').isNumeric().withMessage('Valid price is required'),
+  body('stock').isInt({ min: 0 }).withMessage('Valid stock quantity is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: errors.array()[0].msg });
+    }
+
+    const { name, sku, price, stock, category, description, cost, lowStockThreshold } = req.body;
+
+    // Check if product already exists
+    const existingProduct = await Product.findOne({ sku });
+    if (existingProduct) {
+      return res.status(400).json({ success: false, message: 'Product with this SKU already exists' });
+    }
+
+    const productData = {
+      name,
+      sku,
+      price,
+      cost,
+      stock,
+      category,
+      description,
+      lowStockThreshold,
+      createdBy: req.user._id
+    };
+
+    // Handle image upload
+    if (req.file) {
+      productData.image = `/uploads/${req.file.filename}`;
+    }
+
+    // Generate barcode
+    productData.barcode = sku + Math.random().toString(10).substr(2, 5);
+
+    const product = new Product(productData);
+    await product.save();
+
+    // Log activity and audit
+    await logActivity(req, 'PRODUCT_ADDED', `Added product: ${name}`);
+    await logAudit(req.user._id, 'CREATE', 'Product', product._id, { name, sku });
+
+    res.status(201).json({ success: true, message: 'Product added successfully', product });
+  } catch (error) {
+    console.error('Add product error:', error);
+    res.status(500).json({ success: false, message: 'Error adding product' });
+  }
+});
+
+// Transaction routes
+app.get('/api/transactions', authenticateToken, async (req, res) => {
+  try {
+    const { date, startDate, endDate, page = 1, limit = 50 } = req.query;
+    let filter = {};
+
+    if (date) {
+      const startDate = new Date(date);
+      const endDate = new Date(date);
+      endDate.setHours(23, 59, 59, 999);
+      
+      filter.timestamp = { $gte: startDate, $lte: endDate };
+    } else if (startDate && endDate) {
+      const start = new Date(startDate);
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+      
+      filter.timestamp = { $gte: start, $lte: end };
+    }
+
+    const options = {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      sort: { timestamp: -1 },
+      populate: 'userId'
+    };
+
+    const transactions = await Transaction.paginate(filter, options);
+
+    res.json(transactions);
+  } catch (error) {
+    console.error('Transactions error:', error);
+    res.status(500).json({ success: false, message: 'Error loading transactions' });
+  }
+});
+
+app.post('/api/transactions', authenticateToken, async (req, res) => {
+  try {
+    const { items, paymentMethod, paymentDetails, customer, discount = 0 } = req.body;
+    
+    // Validate items
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, message: 'Transaction must contain at least one item' });
+    }
+
+    // Calculate totals
+    let subtotal = 0;
+    const transactionItems = [];
+    
+    for (const item of items) {
+      const product = await Product.findById(item.productId);
+      if (!product) {
+        return res.status(404).json({ success: false, message: `Product not found: ${item.productId}` });
+      }
+      
+      if (product.stock < item.quantity) {
+        return res.status(400).json({ 
+          success: false, 
+          message: `Insufficient stock for ${product.name}. Available: ${product.stock}` 
+        });
+      }
+      
+      const itemTotal = item.price * item.quantity;
+      subtotal += itemTotal;
+      
+      transactionItems.push({
+        productId: item.productId,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity,
+        total: itemTotal
+      });
+    }
+
+    // Get tax rate from settings
+    const settings = await Settings.findOne();
+    const taxRate = settings?.taxRate || 16;
+    const tax = subtotal * (taxRate / 100);
+    const total = subtotal + tax - discount;
+
+    // Create transaction
+    const transaction = new Transaction({
+      transactionId: generateTransactionId(),
+      userId: req.user._id,
+      items: transactionItems,
+      subtotal,
+      tax,
+      discount,
+      total,
+      paymentMethod,
+      paymentDetails,
+      customer,
+      status: 'completed'
+    });
+
+    await transaction.save();
+
+    // Update product stock levels
+    for (const item of items) {
+      await Product.findByIdAndUpdate(
+        item.productId,
+        { $inc: { stock: -item.quantity } }
+      );
+    }
+
+    // Log activity and audit
+    await logActivity(req, 'TRANSACTION_COMPLETED', `Transaction: ${transaction.transactionId}, Amount: ${total}`);
+    await logAudit(req.user._id, 'CREATE', 'Transaction', transaction._id, { 
+      transactionId: transaction.transactionId, 
+      total 
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Transaction completed successfully',
+      transactionId: transaction.transactionId,
+      transaction
+    });
+
+  } catch (error) {
+    console.error('Transaction error:', error);
+    res.status(500).json({ success: false, message: 'Error processing transaction' });
+  }
 });
 
 // Admin routes
@@ -527,836 +968,13 @@ app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res
   }
 });
 
-app.get('/api/admin/pending-approvals', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const pendingUsers = await User.find({ status: 'pending' })
-      .select('-password')
-      .sort({ createdAt: -1 });
-
-    res.json(pendingUsers);
-  } catch (error) {
-    console.error('Pending approvals error:', error);
-    res.status(500).json({ success: false, message: 'Error loading pending approvals' });
-  }
-});
-
-app.post('/api/admin/approve-user/:userId', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    const oldStatus = user.status;
-    user.status = 'active';
-    user.updatedBy = req.user._id;
-    await user.save();
-
-    // Log activity and audit
-    await logActivity(req, 'USER_APPROVAL', `Approved user: ${user.email}`);
-    await logAudit(req.user._id, 'UPDATE', 'User', user._id, { status: { from: oldStatus, to: 'active' } });
-
-    res.json({ success: true, message: 'User approved successfully' });
-  } catch (error) {
-    console.error('Approve user error:', error);
-    res.status(500).json({ success: false, message: 'Error approving user' });
-  }
-});
-
-app.post('/api/admin/reject-user/:userId', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    const user = await User.findByIdAndDelete(userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    // Log activity and audit
-    await logActivity(req, 'USER_REJECTION', `Rejected user: ${user.email}`);
-    await logAudit(req.user._id, 'DELETE', 'User', user._id, { email: user.email });
-
-    res.json({ success: true, message: 'User rejected successfully' });
-  } catch (error) {
-    console.error('Reject user error:', error);
-    res.status(500).json({ success: false, message: 'Error rejecting user' });
-  }
-});
-
-app.get('/api/admin/users', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { status, role } = req.query;
-    let filter = {};
-    
-    if (status) filter.status = status;
-    if (role) filter.role = role;
-
-    const users = await User.find(filter)
-      .select('-password')
-      .sort({ createdAt: -1 });
-
-    res.json(users);
-  } catch (error) {
-    console.error('Users error:', error);
-    res.status(500).json({ success: false, message: 'Error loading users' });
-  }
-});
-
-app.get('/api/admin/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    const user = await User.findById(userId).select('-password');
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    res.json(user);
-  } catch (error) {
-    console.error('User details error:', error);
-    res.status(500).json({ success: false, message: 'Error loading user details' });
-  }
-});
-
-app.put('/api/admin/users/:userId', authenticateToken, requireAdmin, [
-  body('firstName').notEmpty().withMessage('First name is required'),
-  body('lastName').notEmpty().withMessage('Last name is required'),
-  body('email').isEmail().withMessage('Valid email is required'),
-  body('role').isIn(['admin', 'manager', 'cashier']).withMessage('Invalid role'),
-  body('status').isIn(['active', 'inactive', 'suspended']).withMessage('Invalid status')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: errors.array()[0].msg });
-    }
-
-    const { userId } = req.params;
-    const { firstName, lastName, email, role, status, company, position } = req.body;
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    // Check if email is already taken by another user
-    if (email !== user.email) {
-      const existingUser = await User.findOne({ email });
-      if (existingUser) {
-        return res.status(400).json({ success: false, message: 'Email already taken' });
-      }
-    }
-
-    const oldData = {
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      role: user.role,
-      status: user.status,
-      company: user.company,
-      position: user.position
-    };
-
-    user.firstName = firstName;
-    user.lastName = lastName;
-    user.email = email;
-    user.role = role;
-    user.status = status;
-    user.company = company || user.company;
-    user.position = position || user.position;
-    user.updatedBy = req.user._id;
-
-    await user.save();
-
-    // Log audit
-    const changes = {};
-    Object.keys(oldData).forEach(key => {
-      if (oldData[key] !== user[key]) {
-        changes[key] = { from: oldData[key], to: user[key] };
-      }
-    });
-
-    await logAudit(req.user._id, 'UPDATE', 'User', user._id, changes);
-
-    res.json({ success: true, message: 'User updated successfully', user });
-  } catch (error) {
-    console.error('Update user error:', error);
-    res.status(500).json({ success: false, message: 'Error updating user' });
-  }
-});
-
-app.delete('/api/admin/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    // Prevent admin from deleting themselves
-    if (userId === req.user._id.toString()) {
-      return res.status(400).json({ success: false, message: 'Cannot delete your own account' });
-    }
-
-    const user = await User.findByIdAndDelete(userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    // Log activity and audit
-    await logActivity(req, 'USER_DELETION', `Deleted user: ${user.email}`);
-    await logAudit(req.user._id, 'DELETE', 'User', user._id, { email: user.email });
-
-    res.json({ success: true, message: 'User deleted successfully' });
-  } catch (error) {
-    console.error('Delete user error:', error);
-    res.status(500).json({ success: false, message: 'Error deleting user' });
-  }
-});
-
-app.post('/api/admin/users/:userId/suspend', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    // Prevent admin from suspending themselves
-    if (userId === req.user._id.toString()) {
-      return res.status(400).json({ success: false, message: 'Cannot suspend your own account' });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    const oldStatus = user.status;
-    user.status = 'suspended';
-    user.updatedBy = req.user._id;
-    await user.save();
-
-    // Log activity and audit
-    await logActivity(req, 'USER_SUSPENSION', `Suspended user: ${user.email}`);
-    await logAudit(req.user._id, 'UPDATE', 'User', user._id, { status: { from: oldStatus, to: 'suspended' } });
-
-    res.json({ success: true, message: 'User suspended successfully' });
-  } catch (error) {
-    console.error('Suspend user error:', error);
-    res.status(500).json({ success: false, message: 'Error suspending user' });
-  }
-});
-
-app.post('/api/admin/users/:userId/activate', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    const oldStatus = user.status;
-    user.status = 'active';
-    user.updatedBy = req.user._id;
-    await user.save();
-
-    // Log activity and audit
-    await logActivity(req, 'USER_ACTIVATION', `Activated user: ${user.email}`);
-    await logAudit(req.user._id, 'UPDATE', 'User', user._id, { status: { from: oldStatus, to: 'active' } });
-
-    res.json({ success: true, message: 'User activated successfully' });
-  } catch (error) {
-    console.error('Activate user error:', error);
-    res.status(500).json({ success: false, message: 'Error activating user' });
-  }
-});
-
-app.post('/api/admin/users', authenticateToken, requireAdmin, [
-  body('firstName').notEmpty().withMessage('First name is required'),
-  body('lastName').notEmpty().withMessage('Last name is required'),
-  body('email').isEmail().withMessage('Valid email is required'),
-  body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
-  body('role').isIn(['admin', 'manager', 'cashier']).withMessage('Invalid role'),
-  body('company').notEmpty().withMessage('Company name is required'),
-  body('position').notEmpty().withMessage('Position is required')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: errors.array()[0].msg });
-    }
-
-    const { firstName, lastName, email, password, role, company, position } = req.body;
-
-    // Check if user already exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({ success: false, message: 'User already exists' });
-    }
-
-    // Hash password
-    const saltRounds = 12;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
-
-    // Create new user
-    const newUser = new User({
-      firstName,
-      lastName,
-      email,
-      password: hashedPassword,
-      company,
-      position,
-      role,
-      status: 'active',
-      createdBy: req.user._id
-    });
-
-    await newUser.save();
-
-    // Log activity and audit
-    await logActivity(req, 'USER_CREATION', `Created user: ${email}`);
-    await logAudit(req.user._id, 'CREATE', 'User', newUser._id, { email, role });
-
-    res.status(201).json({
-      success: true,
-      message: 'User created successfully',
-      user: newUser
-    });
-
-  } catch (error) {
-    console.error('Create user error:', error);
-    res.status(500).json({ success: false, message: 'Error creating user' });
-  }
-});
-
-// Product routes
-app.get('/api/products', authenticateToken, async (req, res) => {
-  try {
-    const { category, lowStock } = req.query;
-    let filter = {};
-    
-    if (category) filter.category = category;
-    if (lowStock === 'true') filter.stock = { $lte: 10 };
-
-    const products = await Product.find(filter).sort({ name: 1 });
-    res.json(products);
-  } catch (error) {
-    console.error('Products error:', error);
-    res.status(500).json({ success: false, message: 'Error loading products' });
-  }
-});
-
-app.get('/api/inventory', authenticateToken, async (req, res) => {
-  try {
-    const inventory = await Product.find().sort({ stock: 1 });
-    res.json(inventory);
-  } catch (error) {
-    console.error('Inventory error:', error);
-    res.status(500).json({ success: false, message: 'Error loading inventory' });
-  }
-});
-
-app.post('/api/products', authenticateToken, requireManager, [
-  body('name').notEmpty().withMessage('Product name is required'),
-  body('sku').notEmpty().withMessage('SKU is required'),
-  body('price').isNumeric().withMessage('Valid price is required'),
-  body('stock').isInt({ min: 0 }).withMessage('Valid stock quantity is required')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: errors.array()[0].msg });
-    }
-
-    const { name, sku, price, stock, category, description, cost, lowStockThreshold } = req.body;
-
-    // Check if product already exists
-    const existingProduct = await Product.findOne({ sku });
-    if (existingProduct) {
-      return res.status(400).json({ success: false, message: 'Product with this SKU already exists' });
-    }
-
-    const product = new Product({
-      name,
-      sku,
-      price,
-      cost,
-      stock,
-      category,
-      description,
-      lowStockThreshold,
-      createdBy: req.user._id
-    });
-
-    await product.save();
-
-    // Log activity and audit
-    await logActivity(req, 'PRODUCT_ADDED', `Added product: ${name}`);
-    await logAudit(req.user._id, 'CREATE', 'Product', product._id, { name, sku });
-
-    res.status(201).json({ success: true, message: 'Product added successfully', product });
-  } catch (error) {
-    console.error('Add product error:', error);
-    res.status(500).json({ success: false, message: 'Error adding product' });
-  }
-});
-
-app.put('/api/products/:productId', authenticateToken, requireManager, [
-  body('name').notEmpty().withMessage('Product name is required'),
-  body('price').isNumeric().withMessage('Valid price is required'),
-  body('stock').isInt({ min: 0 }).withMessage('Valid stock quantity is required')
-], async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: errors.array()[0].msg });
-    }
-
-    const { productId } = req.params;
-    const { name, price, stock, category, description, cost, lowStockThreshold } = req.body;
-
-    const product = await Product.findById(productId);
-    if (!product) {
-      return res.status(404).json({ success: false, message: 'Product not found' });
-    }
-
-    const oldData = {
-      name: product.name,
-      price: product.price,
-      stock: product.stock,
-      category: product.category,
-      description: product.description,
-      cost: product.cost,
-      lowStockThreshold: product.lowStockThreshold
-    };
-
-    product.name = name;
-    product.price = price;
-    product.stock = stock;
-    product.category = category;
-    product.description = description;
-    product.cost = cost;
-    product.lowStockThreshold = lowStockThreshold;
-    product.updatedBy = req.user._id;
-    product.updatedAt = new Date();
-
-    await product.save();
-
-    // Log audit
-    const changes = {};
-    Object.keys(oldData).forEach(key => {
-      if (oldData[key] !== product[key]) {
-        changes[key] = { from: oldData[key], to: product[key] };
-      }
-    });
-
-    await logAudit(req.user._id, 'UPDATE', 'Product', product._id, changes);
-
-    res.json({ success: true, message: 'Product updated successfully', product });
-  } catch (error) {
-    console.error('Update product error:', error);
-    res.status(500).json({ success: false, message: 'Error updating product' });
-  }
-});
-
-app.delete('/api/products/:productId', authenticateToken, requireManager, async (req, res) => {
-  try {
-    const { productId } = req.params;
-
-    const product = await Product.findByIdAndDelete(productId);
-    if (!product) {
-      return res.status(404).json({ success: false, message: 'Product not found' });
-    }
-
-    // Log activity and audit
-    await logActivity(req, 'PRODUCT_DELETED', `Deleted product: ${product.name}`);
-    await logAudit(req.user._id, 'DELETE', 'Product', product._id, { name: product.name, sku: product.sku });
-
-    res.json({ success: true, message: 'Product deleted successfully' });
-  } catch (error) {
-    console.error('Delete product error:', error);
-    res.status(500).json({ success: false, message: 'Error deleting product' });
-  }
-});
-
-// Transaction routes
-app.get('/api/transactions', authenticateToken, async (req, res) => {
-  try {
-    const { date, startDate, endDate, page = 1, limit = 50 } = req.query;
-    let filter = {};
-
-    if (date) {
-      const startDate = new Date(date);
-      const endDate = new Date(date);
-      endDate.setHours(23, 59, 59, 999);
-      
-      filter.timestamp = { $gte: startDate, $lte: endDate };
-    } else if (startDate && endDate) {
-      const start = new Date(startDate);
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      
-      filter.timestamp = { $gte: start, $lte: end };
-    }
-
-    const options = {
-      page: parseInt(page),
-      limit: parseInt(limit),
-      sort: { timestamp: -1 },
-      populate: 'userId'
-    };
-
-    const transactions = await Transaction.paginate(filter, options);
-
-    res.json(transactions);
-  } catch (error) {
-    console.error('Transactions error:', error);
-    res.status(500).json({ success: false, message: 'Error loading transactions' });
-  }
-});
-
-app.get('/api/transactions/:transactionId', authenticateToken, async (req, res) => {
-  try {
-    const { transactionId } = req.params;
-
-    const transaction = await Transaction.findOne({ transactionId })
-      .populate('userId', 'firstName lastName email');
-
-    if (!transaction) {
-      return res.status(404).json({ success: false, message: 'Transaction not found' });
-    }
-
-    res.json(transaction);
-  } catch (error) {
-    console.error('Transaction details error:', error);
-    res.status(500).json({ success: false, message: 'Error loading transaction details' });
-  }
-});
-
-app.post('/api/transactions', authenticateToken, async (req, res) => {
-  try {
-    const { items, paymentMethod, paymentDetails, customer, discount = 0 } = req.body;
-    
-    // Calculate totals
-    let subtotal = 0;
-    const transactionItems = items.map(item => {
-      const itemTotal = item.price * item.quantity;
-      subtotal += itemTotal;
-      
-      return {
-        productId: item.productId,
-        name: item.name,
-        price: item.price,
-        quantity: item.quantity,
-        total: itemTotal
-      };
-    });
-
-    // Get tax rate from settings
-    const settings = await Settings.findOne();
-    const taxRate = settings?.taxRate || 16;
-    const tax = subtotal * (taxRate / 100);
-    const total = subtotal + tax - discount;
-
-    // Create transaction
-    const transaction = new Transaction({
-      transactionId: generateTransactionId(),
-      userId: req.user._id,
-      items: transactionItems,
-      subtotal,
-      tax,
-      discount,
-      total,
-      paymentMethod,
-      paymentDetails,
-      customer,
-      status: 'completed'
-    });
-
-    await transaction.save();
-
-    // Update product stock levels
-    for (const item of items) {
-      await Product.findByIdAndUpdate(
-        item.productId,
-        { $inc: { stock: -item.quantity } }
-      );
-    }
-
-    // Log activity and audit
-    await logActivity(req, 'TRANSACTION_COMPLETED', `Transaction: ${transaction.transactionId}, Amount: ${total}`);
-    await logAudit(req.user._id, 'CREATE', 'Transaction', transaction._id, { 
-      transactionId: transaction.transactionId, 
-      total 
-    });
-
-    res.status(201).json({
-      success: true,
-      message: 'Transaction completed successfully',
-      transactionId: transaction.transactionId,
-      transaction
-    });
-
-  } catch (error) {
-    console.error('Transaction error:', error);
-    res.status(500).json({ success: false, message: 'Error processing transaction' });
-  }
-});
-
-// Reports routes
-app.get('/api/admin/reports', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { type, startDate, endDate } = req.query;
-    let start, end;
-
-    switch (type) {
-      case 'daily':
-        start = new Date();
-        start.setHours(0, 0, 0, 0);
-        end = new Date();
-        end.setHours(23, 59, 59, 999);
-        break;
-      case 'weekly':
-        start = new Date();
-        start.setDate(start.getDate() - 7);
-        end = new Date();
-        break;
-      case 'monthly':
-        start = new Date();
-        start.setMonth(start.getMonth() - 1);
-        end = new Date();
-        break;
-      case 'custom':
-        start = new Date(startDate);
-        end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-        break;
-      default:
-        start = new Date();
-        start.setHours(0, 0, 0, 0);
-        end = new Date();
-        end.setHours(23, 59, 59, 999);
-    }
-
-    const salesData = await Transaction.aggregate([
-      {
-        $match: {
-          timestamp: { $gte: start, $lte: end },
-          status: 'completed'
-        }
-      },
-      {
-        $group: {
-          _id: {
-            $dateToString: { format: "%Y-%m-%d", date: "$timestamp" }
-          },
-          totalSales: { $sum: "$total" },
-          transactionCount: { $sum: 1 }
-        }
-      },
-      { $sort: { _id: 1 } }
-    ]);
-
-    // Get top products
-    const topProducts = await Transaction.aggregate([
-      {
-        $match: {
-          timestamp: { $gte: start, $lte: end },
-          status: 'completed'
-        }
-      },
-      { $unwind: "$items" },
-      {
-        $group: {
-          _id: "$items.name",
-          totalQuantity: { $sum: "$items.quantity" },
-          totalRevenue: { $sum: "$items.total" }
-        }
-      },
-      { $sort: { totalRevenue: -1 } },
-      { $limit: 10 }
-    ]);
-
-    // Format data for chart
-    const labels = salesData.map(item => item._id);
-    const data = salesData.map(item => item.totalSales);
-
-    res.json({
-      success: true,
-      reportType: type,
-      period: { start, end },
-      labels,
-      data,
-      summary: {
-        totalSales: data.reduce((sum, val) => sum + val, 0),
-        totalTransactions: salesData.reduce((sum, item) => sum + item.transactionCount, 0)
-      },
-      topProducts
-    });
-
-  } catch (error) {
-    console.error('Reports error:', error);
-    res.status(500).json({ success: false, message: 'Error generating report' });
-  }
-});
-
-// Activity logs
-app.get('/api/admin/activities', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { page = 1, limit = 50 } = req.query;
-    
-    const options = {
-      page: parseInt(page),
-      limit: parseInt(limit),
-      sort: { timestamp: -1 },
-      populate: 'userId'
-    };
-
-    const activities = await Activity.paginate({}, options);
-    res.json(activities);
-  } catch (error) {
-    console.error('Activities error:', error);
-    res.status(500).json({ success: false, message: 'Error loading activities' });
-  }
-});
-
-// Audit logs
-app.get('/api/admin/audit-logs', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { page = 1, limit = 50, resource, action } = req.query;
-    let filter = {};
-    
-    if (resource) filter.resource = resource;
-    if (action) filter.action = action;
-
-    const options = {
-      page: parseInt(page),
-      limit: parseInt(limit),
-      sort: { timestamp: -1 },
-      populate: 'userId'
-    };
-
-    const auditLogs = await AuditLog.paginate(filter, options);
-    res.json(auditLogs);
-  } catch (error) {
-    console.error('Audit logs error:', error);
-    res.status(500).json({ success: false, message: 'Error loading audit logs' });
-  }
-});
-
-// Settings routes
-app.get('/api/admin/settings', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    let settings = await Settings.findOne();
-    if (!settings) {
-      settings = new Settings();
-      await settings.save();
-    }
-    res.json(settings);
-  } catch (error) {
-    console.error('Settings error:', error);
-    res.status(500).json({ success: false, message: 'Error loading settings' });
-  }
-});
-
-app.post('/api/admin/settings', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { companyName, currency, taxRate, receiptFooter, lowStockAlert } = req.body;
-
-    let settings = await Settings.findOne();
-    if (!settings) {
-      settings = new Settings();
-    }
-
-    const oldSettings = {
-      companyName: settings.companyName,
-      currency: settings.currency,
-      taxRate: settings.taxRate,
-      receiptFooter: settings.receiptFooter,
-      lowStockAlert: settings.lowStockAlert
-    };
-
-    settings.companyName = companyName || settings.companyName;
-    settings.currency = currency || settings.currency;
-    settings.taxRate = taxRate || settings.taxRate;
-    settings.receiptFooter = receiptFooter || settings.receiptFooter;
-    settings.lowStockAlert = lowStockAlert !== undefined ? lowStockAlert : settings.lowStockAlert;
-    settings.updatedAt = new Date();
-    settings.updatedBy = req.user._id;
-
-    await settings.save();
-
-    // Log activity and audit
-    await logActivity(req, 'SETTINGS_UPDATE', 'Updated system settings');
-    
-    const changes = {};
-    Object.keys(oldSettings).forEach(key => {
-      if (oldSettings[key] !== settings[key]) {
-        changes[key] = { from: oldSettings[key], to: settings[key] };
-      }
-    });
-    
-    await logAudit(req.user._id, 'UPDATE', 'Settings', settings._id, changes);
-
-    res.json({ success: true, message: 'Settings updated successfully', settings });
-  } catch (error) {
-    console.error('Update settings error:', error);
-    res.status(500).json({ success: false, message: 'Error updating settings' });
-  }
-});
-
-// M-Pesa payment integration
-app.post('/api/mpesa/payment', authenticateToken, async (req, res) => {
-  try {
-    const { phoneNumber, amount, cart } = req.body;
-
-    // In a real implementation, this would integrate with Safaricom M-Pesa API
-    // For demo purposes, we'll simulate a successful payment
-
-    // Simulate M-Pesa API call delay
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    // Generate mock M-Pesa transaction details
-    const mpesaResponse = {
-      MerchantRequestID: `MAR${Date.now()}`,
-      CheckoutRequestID: `COK${Date.now()}`,
-      ResponseCode: '0',
-      ResponseDescription: 'Success',
-      CustomerMessage: 'Please enter your M-Pesa PIN to complete the payment'
-    };
-
-    // Simulate payment processing
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    // For demo, assume payment is always successful
-    const transactionId = `MPESA${Date.now()}`;
-
-    res.json({
-      success: true,
-      message: 'M-Pesa payment initiated successfully',
-      transactionId,
-      mpesaResponse
-    });
-
-  } catch (error) {
-    console.error('M-Pesa payment error:', error);
-    res.status(500).json({ success: false, message: 'Error processing M-Pesa payment' });
-  }
-});
-
-// Error handling middleware
-app.use((error, req, res, next) => {
-  console.error('Unhandled error:', error);
-  res.status(500).json({ success: false, message: 'Internal server error' });
-});
-
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({ success: false, message: 'Endpoint not found' });
-});
-
 // Initialize default data and start server
 async function startServer() {
   try {
-    // Initialize default admin and settings
+    // Initialize default data
     await initializeDefaultAdmin();
     await initializeDefaultSettings();
+    await initializeSampleProducts();
     
     // Start server
     app.listen(PORT, () => {
@@ -1368,12 +986,15 @@ async function startServer() {
   }
 }
 
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('Shutting down gracefully...');
-  await mongoose.connection.close();
-  await redisClient.quit();
-  process.exit(0);
+// Error handling middleware
+app.use((error, req, res, next) => {
+  console.error('Unhandled error:', error);
+  res.status(500).json({ success: false, message: 'Internal server error' });
+});
+
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({ success: false, message: 'Endpoint not found' });
 });
 
 // Start the server
