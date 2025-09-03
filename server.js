@@ -598,14 +598,14 @@ app.get('/api/inventory', authenticateToken, async (req, res) => {
   }
 });
 
-// Cashiers endpoint - FIXED
+// Cashiers endpoint - FIXED to return first name and email
 app.get('/api/cashiers', authenticateToken, async (req, res) => {
   try {
     const cashiers = await User.find({ 
       role: 'cashier', 
       status: 'active' 
     })
-    .select('firstName lastName email position')
+    .select('firstName email')
     .sort({ firstName: 1 })
     .lean();
 
