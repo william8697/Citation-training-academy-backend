@@ -1,7 +1,7 @@
 {
-  "name": "algracia-pos-backend",
+  "name": "algracia-cosmetics-backend",
   "version": "1.0.0",
-  "description": "Backend for Algracia Cosmetics POS System",
+  "description": "Enterprise POS and Admin System for Algracia Cosmetics",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -13,13 +13,28 @@
     "bcryptjs": "^2.4.3",
     "jsonwebtoken": "^9.0.2",
     "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
     "redis": "^4.6.8",
-    "dotenv": "^16.3.1"
+    "multer": "^1.4.5-lts.1",
+    "helmet": "^7.0.0",
+    "express-rate-limit": "^6.10.0",
+    "express-validator": "^7.0.1",
+    "nodemailer": "^6.9.4",
+    "moment": "^2.29.4",
+    "axios": "^1.5.0",
+    "stripe": "^12.19.0",
+    "mpesa-api": "^0.6.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
   },
-  "keywords": ["pos", "retail", "inventory", "management"],
-  "author": "Algracia Team",
+  "keywords": [
+    "pos",
+    "admin",
+    "cosmetics",
+    "enterprise",
+    "inventory"
+  ],
+  "author": "Algracia Cosmetics",
   "license": "MIT"
 }
