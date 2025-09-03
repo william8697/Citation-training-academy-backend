@@ -86,9 +86,8 @@ const SettingsSchema = new mongoose.Schema({
   lowStockAlert: { type: Boolean, default: true },
   updatedAt: { type: Date, default: Date.now },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
-}); 
+});
 
-// Activity Schema (moved before the first declaration to avoid duplicate)
 const ActivitySchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   action: { 
@@ -120,8 +119,8 @@ const ActivitySchema = new mongoose.Schema({
   details: { type: String },
   ipAddress: { type: String },
   userAgent: { type: String },
-  targetId: { type: mongoose.Schema.Types.ObjectId }, // ID of the affected entity
-  targetType: { type: String }, // Type of the affected entity (User, Product, etc.)
+  targetId: { type: mongoose.Schema.Types.ObjectId },
+  targetType: { type: String },
   timestamp: { type: Date, default: Date.now }
 });
 
@@ -161,8 +160,8 @@ app.use(express.static('public'));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000 // limit each IP to 1000 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 1000
 });
 app.use(limiter);
 
@@ -178,7 +177,6 @@ const authenticateToken = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     
-    // Check if user exists and is active
     const user = await User.findById(decoded.userId);
     if (!user || user.status !== 'active') {
       return res.status(403).json({ success: false, message: 'Invalid or inactive account' });
@@ -272,17 +270,14 @@ app.post('/api/auth/signup', [
 
     const { firstName, lastName, email, password, company, position } = req.body;
 
-    // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ success: false, message: 'User already exists' });
     }
 
-    // Hash password
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // Create new user (pending approval)
     const newUser = new User({
       firstName,
       lastName,
@@ -319,13 +314,11 @@ app.post('/api/auth/login', [
 
     const { email, password } = req.body;
 
-    // Find user
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Check if account is approved
     if (user.status !== 'active') {
       return res.status(401).json({ 
         success: false, 
@@ -335,24 +328,20 @@ app.post('/api/auth/login', [
       });
     }
 
-    // Check password
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Update last login
     user.lastLogin = new Date();
     await user.save();
 
-    // Generate JWT token
     const token = jwt.sign(
       { userId: user._id, email: user.email, role: user.role },
       JWT_SECRET,
       { expiresIn: '24h' }
     );
 
-    // Log login activity
     await logActivity(user._id, 'LOGIN', 'User logged in', req);
 
     res.json({
@@ -393,7 +382,7 @@ app.post('/api/auth/verify', authenticateToken, (req, res) => {
   });
 });
 
-// Enhanced dashboard endpoint to include more stats
+// Dashboard endpoint
 app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const todayStart = new Date();
@@ -501,7 +490,6 @@ app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res
     const weekSalesTotal = weekSales.length > 0 ? weekSales[0].total : 0;
     const monthSalesTotal = monthSales.length > 0 ? monthSales[0].total : 0;
 
-    // Log activity
     await logActivity(req.user._id, 'VIEW_DASHBOARD', 'Viewed dashboard', req);
 
     res.json({
@@ -547,7 +535,6 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
   try {
     const { items, paymentMethod, paymentDetails, customer, discount = 0 } = req.body;
     
-    // Calculate totals
     let subtotal = 0;
     const transactionItems = items.map(item => {
       const itemTotal = item.price * item.quantity;
@@ -562,13 +549,11 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
       };
     });
 
-    // Get tax rate from settings
     const settings = await Settings.findOne();
     const taxRate = settings?.taxRate || 16;
     const tax = subtotal * (taxRate / 100);
     const total = subtotal + tax - discount;
 
-    // Create transaction
     const transaction = new Transaction({
       transactionId: 'TXN' + Date.now() + Math.random().toString(36).substr(2, 9).toUpperCase(),
       userId: req.user._id,
@@ -585,7 +570,6 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
 
     await transaction.save();
 
-    // Update product stock levels
     for (const item of items) {
       await Product.findByIdAndUpdate(
         item.productId,
@@ -593,7 +577,6 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
       );
     }
 
-    // Log transaction activity
     await logActivity(
       req.user._id, 
       'TRANSACTION_CREATION', 
@@ -616,7 +599,7 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
   }
 });
 
-// Get pending user approvals (return array only)
+// Get pending user approvals
 app.get('/api/admin/pending-approvals', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const pendingUsers = await User.find({ status: 'pending' })
@@ -624,17 +607,16 @@ app.get('/api/admin/pending-approvals', authenticateToken, requireAdmin, async (
       .sort({ createdAt: -1 })
       .lean();
 
-    // Log activity
     await logActivity(req.user._id, 'VIEW_PENDING_APPROVALS', 'Viewed pending approvals', req);
 
-    res.json(pendingUsers); // Return array directly
+    res.json(pendingUsers);
   } catch (error) {
     console.error('Error fetching pending approvals:', error);
     res.status(500).json({ success: false, message: 'Error fetching pending approvals' });
   }
 });
 
-// Get active users (return array only)
+// Get active users
 app.get('/api/admin/users/active', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const activeUsers = await User.find({ status: 'active' })
@@ -642,17 +624,16 @@ app.get('/api/admin/users/active', authenticateToken, requireAdmin, async (req, 
       .sort({ firstName: 1, lastName: 1 })
       .lean();
 
-    // Log activity
     await logActivity(req.user._id, 'VIEW_ACTIVE_USERS', 'Viewed active users', req);
 
-    res.json(activeUsers); // Return array directly
+    res.json(activeUsers);
   } catch (error) {
     console.error('Error fetching active users:', error);
     res.status(500).json({ success: false, message: 'Error fetching active users' });
   }
 });
 
-// Get all inventory (return array only)
+// Get all inventory
 app.get('/api/admin/inventory', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { lowStock } = req.query;
@@ -666,17 +647,16 @@ app.get('/api/admin/inventory', authenticateToken, requireAdmin, async (req, res
       .sort({ name: 1 })
       .lean();
 
-    // Log activity
     await logActivity(req.user._id, 'VIEW_INVENTORY', 'Viewed inventory', req);
 
-    res.json(inventory); // Return array directly
+    res.json(inventory);
   } catch (error) {
     console.error('Error fetching inventory:', error);
     res.status(500).json({ success: false, message: 'Error fetching inventory' });
   }
 });
 
-// Get all transactions (return array only)
+// Get all transactions
 app.get('/api/admin/transactions', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { date } = req.query;
@@ -699,17 +679,16 @@ app.get('/api/admin/transactions', authenticateToken, requireAdmin, async (req, 
       .limit(100)
       .lean();
 
-    // Log activity
     await logActivity(req.user._id, 'VIEW_TRANSACTIONS', 'Viewed transactions', req);
 
-    res.json(transactions); // Return array directly
+    res.json(transactions);
   } catch (error) {
     console.error('Error fetching transactions:', error);
     res.status(500).json({ success: false, message: 'Error fetching transactions' });
   }
 });
 
-// Get recent activities (return array only)
+// Get recent activities
 app.get('/api/admin/activities', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const activities = await Activity.find()
@@ -718,17 +697,16 @@ app.get('/api/admin/activities', authenticateToken, requireAdmin, async (req, re
       .limit(50)
       .lean();
 
-    // Log activity
     await logActivity(req.user._id, 'VIEW_ACTIVITIES', 'Viewed activities', req);
 
-    res.json(activities); // Return array directly
+    res.json(activities);
   } catch (error) {
     console.error('Error fetching activities:', error);
     res.status(500).json({ success: false, message: 'Error fetching activities' });
   }
 });
 
-// Get inactive users (new endpoint for the inactive tab)
+// Get inactive users
 app.get('/api/admin/users/inactive', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const inactiveUsers = await User.find({ 
@@ -738,17 +716,16 @@ app.get('/api/admin/users/inactive', authenticateToken, requireAdmin, async (req
       .sort({ firstName: 1, lastName: 1 })
       .lean();
 
-    // Log activity
     await logActivity(req.user._id, 'VIEW_INACTIVE_USERS', 'Viewed inactive users', req);
 
-    res.json(inactiveUsers); // Return array directly
+    res.json(inactiveUsers);
   } catch (error) {
     console.error('Error fetching inactive users:', error);
     res.status(500).json({ success: false, message: 'Error fetching inactive users' });
   }
 });
 
-// User approval endpoint
+// User approval endpoint - FIXED
 app.post('/api/admin/users/:id/approve', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -756,11 +733,14 @@ app.post('/api/admin/users/:id/approve', authenticateToken, requireAdmin, async 
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
+    if (user.status === 'active') {
+      return res.status(400).json({ success: false, message: 'User is already approved' });
+    }
+
     user.status = 'active';
     user.updatedBy = req.user._id;
     await user.save();
 
-    // Log approval activity
     await logActivity(
       req.user._id, 
       'USER_APPROVAL', 
@@ -770,14 +750,26 @@ app.post('/api/admin/users/:id/approve', authenticateToken, requireAdmin, async 
       'User'
     );
 
-    res.json({ success: true, message: 'User approved successfully' });
+    res.json({ 
+      success: true, 
+      message: 'User approved successfully',
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        company: user.company,
+        position: user.position,
+        status: user.status
+      }
+    });
   } catch (error) {
     console.error('Error approving user:', error);
     res.status(500).json({ success: false, message: 'Error approving user' });
   }
 });
 
-// User rejection endpoint
+// User rejection endpoint - FIXED
 app.post('/api/admin/users/:id/reject', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
@@ -789,7 +781,6 @@ app.post('/api/admin/users/:id/reject', authenticateToken, requireAdmin, async (
     user.updatedBy = req.user._id;
     await user.save();
 
-    // Log rejection activity
     await logActivity(
       req.user._id, 
       'USER_REJECTION', 
@@ -799,10 +790,357 @@ app.post('/api/admin/users/:id/reject', authenticateToken, requireAdmin, async (
       'User'
     );
 
-    res.json({ success: true, message: 'User rejected successfully' });
+    res.json({ 
+      success: true, 
+      message: 'User rejected successfully',
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        company: user.company,
+        position: user.position,
+        status: user.status
+      }
+    });
   } catch (error) {
     console.error('Error rejecting user:', error);
     res.status(500).json({ success: false, message: 'Error rejecting user' });
+  }
+});
+
+// Add new user
+app.post('/api/admin/users', authenticateToken, requireAdmin, [
+  body('name').notEmpty().trim().withMessage('Name is required'),
+  body('email').isEmail().normalizeEmail().withMessage('Valid email is required'),
+  body('company').notEmpty().trim().withMessage('Company name is required'),
+  body('position').notEmpty().trim().withMessage('Position is required'),
+  body('role').isIn(['admin', 'manager', 'cashier']).withMessage('Valid role is required')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: errors.array()[0].msg });
+    }
+
+    const { name, email, company, position, role } = req.body;
+    
+    // Split name into first and last name
+    const nameParts = name.split(' ');
+    const firstName = nameParts[0];
+    const lastName = nameParts.slice(1).join(' ') || 'User';
+
+    // Check if user already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ success: false, message: 'User with this email already exists' });
+    }
+
+    // Generate a random password
+    const randomPassword = Math.random().toString(36).slice(-10) + 'A1!';
+    const saltRounds = 12;
+    const hashedPassword = await bcrypt.hash(randomPassword, saltRounds);
+
+    // Create new user
+    const newUser = new User({
+      firstName,
+      lastName,
+      email,
+      password: hashedPassword,
+      company,
+      position,
+      role,
+      status: 'active',
+      createdBy: req.user._id
+    });
+
+    await newUser.save();
+
+    await logActivity(
+      req.user._id, 
+      'USER_CREATION', 
+      `Created user: ${firstName} ${lastName} (${email}) with role: ${role}`, 
+      req, 
+      newUser._id, 
+      'User'
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'User created successfully',
+      user: {
+        id: newUser._id,
+        firstName: newUser.firstName,
+        lastName: newUser.lastName,
+        email: newUser.email,
+        company: newUser.company,
+        position: newUser.position,
+        role: newUser.role,
+        status: newUser.status
+      }
+    });
+
+  } catch (error) {
+    console.error('Error creating user:', error);
+    res.status(500).json({ success: false, message: 'Error creating user' });
+  }
+});
+
+// Deactivate user
+app.post('/api/admin/users/:id/deactivate', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.status === 'inactive') {
+      return res.status(400).json({ success: false, message: 'User is already inactive' });
+    }
+
+    user.status = 'inactive';
+    user.updatedBy = req.user._id;
+    await user.save();
+
+    await logActivity(
+      req.user._id, 
+      'USER_UPDATE', 
+      `Deactivated user: ${user.firstName} ${user.lastName} (${user.email})`, 
+      req, 
+      user._id, 
+      'User'
+    );
+
+    res.json({ 
+      success: true, 
+      message: 'User deactivated successfully',
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        status: user.status
+      }
+    });
+  } catch (error) {
+    console.error('Error deactivating user:', error);
+    res.status(500).json({ success: false, message: 'Error deactivating user' });
+  }
+});
+
+// Activate user
+app.post('/api/admin/users/:id/activate', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.status === 'active') {
+      return res.status(400).json({ success: false, message: 'User is already active' });
+    }
+
+    user.status = 'active';
+    user.updatedBy = req.user._id;
+    await user.save();
+
+    await logActivity(
+      req.user._id, 
+      'USER_UPDATE', 
+      `Activated user: ${user.firstName} ${user.lastName} (${user.email})`, 
+      req, 
+      user._id, 
+      'User'
+    );
+
+    res.json({ 
+      success: true, 
+      message: 'User activated successfully',
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        status: user.status
+      }
+    });
+  } catch (error) {
+    console.error('Error activating user:', error);
+    res.status(500).json({ success: false, message: 'Error activating user' });
+  }
+});
+
+// Delete user
+app.delete('/api/admin/users/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Prevent deletion of the default admin account
+    if (user.email === 'admin@algracia.com') {
+      return res.status(400).json({ success: false, message: 'Cannot delete default admin account' });
+    }
+
+    await User.findByIdAndDelete(req.params.id);
+
+    await logActivity(
+      req.user._id, 
+      'USER_DELETION', 
+      `Deleted user: ${user.firstName} ${user.lastName} (${user.email})`, 
+      req, 
+      user._id, 
+      'User'
+    );
+
+    res.json({ 
+      success: true, 
+      message: 'User deleted successfully'
+    });
+  } catch (error) {
+    console.error('Error deleting user:', error);
+    res.status(500).json({ success: false, message: 'Error deleting user' });
+  }
+});
+
+// Delete inventory item
+app.delete('/api/admin/inventory/:id', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    await Product.findByIdAndDelete(req.params.id);
+
+    await logActivity(
+      req.user._id, 
+      'PRODUCT_DELETION', 
+      `Deleted product: ${product.name} (${product.sku})`, 
+      req, 
+      product._id, 
+      'Product'
+    );
+
+    res.json({ 
+      success: true, 
+      message: 'Product deleted successfully'
+    });
+  } catch (error) {
+    console.error('Error deleting product:', error);
+    res.status(500).json({ success: false, message: 'Error deleting product' });
+  }
+});
+
+// Get sales reports
+app.get('/api/admin/reports', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { type } = req.query;
+    let startDate, endDate = new Date();
+    
+    switch (type) {
+      case 'daily':
+        startDate = new Date();
+        startDate.setHours(0, 0, 0, 0);
+        break;
+      case 'weekly':
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - 7);
+        break;
+      case 'monthly':
+        startDate = new Date();
+        startDate.setMonth(startDate.getMonth() - 1);
+        break;
+      case 'custom':
+        // For custom range, you would need to pass start and end dates
+        startDate = new Date(req.query.startDate);
+        endDate = new Date(req.query.endDate);
+        break;
+      default:
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - 30); // Default to 30 days
+    }
+
+    const salesData = await Transaction.aggregate([
+      {
+        $match: {
+          status: 'completed',
+          timestamp: { $gte: startDate, $lte: endDate }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$timestamp' },
+            month: { $month: '$timestamp' },
+            day: { $dayOfMonth: '$timestamp' }
+          },
+          totalSales: { $sum: '$total' },
+          transactionCount: { $sum: 1 }
+        }
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 } }
+    ]);
+
+    // Format data for chart
+    const labels = salesData.map(item => `${item._id.month}/${item._id.day}/${item._id.year}`);
+    const data = salesData.map(item => item.totalSales);
+
+    await logActivity(req.user._id, 'VIEW_REPORTS', `Viewed ${type} sales report`, req);
+
+    res.json({
+      success: true,
+      reportType: type,
+      startDate,
+      endDate,
+      labels,
+      data,
+      salesData
+    });
+
+  } catch (error) {
+    console.error('Error generating report:', error);
+    res.status(500).json({ success: false, message: 'Error generating report' });
+  }
+});
+
+// Update system settings
+app.post('/api/admin/settings', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { companyName, currency, taxRate, receiptFooter, lowStockAlert } = req.body;
+
+    let settings = await Settings.findOne();
+    if (!settings) {
+      settings = new Settings();
+    }
+
+    if (companyName) settings.companyName = companyName;
+    if (currency) settings.currency = currency;
+    if (taxRate) settings.taxRate = taxRate;
+    if (receiptFooter) settings.receiptFooter = receiptFooter;
+    if (lowStockAlert !== undefined) settings.lowStockAlert = lowStockAlert;
+    
+    settings.updatedAt = new Date();
+    settings.updatedBy = req.user._id;
+
+    await settings.save();
+
+    await logActivity(
+      req.user._id, 
+      'SETTINGS_UPDATE', 
+      'Updated system settings', 
+      req
+    );
+
+    res.json({ 
+      success: true, 
+      message: 'Settings saved successfully',
+      settings
+    });
+  } catch (error) {
+    console.error('Error saving settings:', error);
+    res.status(500).json({ success: false, message: 'Error saving settings' });
   }
 });
 
@@ -819,82 +1157,6 @@ app.get('/login', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
-
-// Approve user
-async function approveUser(userId) {
-  try {
-    const authToken = localStorage.getItem('authToken');
-    const response = await fetch(`${API_BASE_URL}/api/admin/users/${userId}/approve`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${authToken}`
-      }
-    });
-    
-    if (!response.ok) {
-      if (response.status === 401) {
-        logout();
-        return;
-      }
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-    
-    const result = await response.json();
-    
-    if (result.success) {
-      showNotification('User approved successfully.', 'success');
-      elements.userApprovalModal.classList.remove('active');
-      
-      // Refresh the approvals list
-      loadPendingApprovals();
-      loadDashboardData();
-    } else {
-      showNotification('Failed to approve user: ' + result.message, 'error');
-    }
-  } catch (error) {
-    console.error('Error approving user:', error);
-    showNotification('Failed to approve user.', 'error');
-  }
-}
-
-// Reject user
-async function rejectUser(userId) {
-  try {
-    const authToken = localStorage.getItem('authToken');
-    const response = await fetch(`${API_BASE_URL}/api/admin/users/${userId}/reject`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${authToken}`
-      }
-    });
-    
-    if (!response.ok) {
-      if (response.status === 401) {
-        logout();
-        return;
-      }
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-    
-    const result = await response.json();
-    
-    if (result.success) {
-      showNotification('User rejected successfully.', 'success');
-      elements.userApprovalModal.classList.remove('active');
-      
-      // Refresh the approvals list
-      loadPendingApprovals();
-      loadDashboardData();
-    } else {
-      showNotification('Failed to reject user: ' + result.message, 'error');
-    }
-  } catch (error) {
-    console.error('Error rejecting user:', error);
-    showNotification('Failed to reject user.', 'error');
-  }
-}
-
-
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
@@ -909,11 +1171,9 @@ app.use('*', (req, res) => {
 // Initialize default data and start server
 async function startServer() {
   try {
-    // Initialize default admin and settings
     await initializeDefaultAdmin();
     await initializeDefaultSettings();
     
-    // Start server
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
       console.log(`Default admin: admin@algracia.com / Admin@123`);
