@@ -819,6 +819,82 @@ app.get('/login', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
+
+// Approve user
+async function approveUser(userId) {
+  try {
+    const authToken = localStorage.getItem('authToken');
+    const response = await fetch(`${API_BASE_URL}/api/admin/users/${userId}/approve`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`
+      }
+    });
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        logout();
+        return;
+      }
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      showNotification('User approved successfully.', 'success');
+      elements.userApprovalModal.classList.remove('active');
+      
+      // Refresh the approvals list
+      loadPendingApprovals();
+      loadDashboardData();
+    } else {
+      showNotification('Failed to approve user: ' + result.message, 'error');
+    }
+  } catch (error) {
+    console.error('Error approving user:', error);
+    showNotification('Failed to approve user.', 'error');
+  }
+}
+
+// Reject user
+async function rejectUser(userId) {
+  try {
+    const authToken = localStorage.getItem('authToken');
+    const response = await fetch(`${API_BASE_URL}/api/admin/users/${userId}/reject`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${authToken}`
+      }
+    });
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        logout();
+        return;
+      }
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const result = await response.json();
+    
+    if (result.success) {
+      showNotification('User rejected successfully.', 'success');
+      elements.userApprovalModal.classList.remove('active');
+      
+      // Refresh the approvals list
+      loadPendingApprovals();
+      loadDashboardData();
+    } else {
+      showNotification('Failed to reject user: ' + result.message, 'error');
+    }
+  } catch (error) {
+    console.error('Error rejecting user:', error);
+    showNotification('Failed to reject user.', 'error');
+  }
+}
+
+
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
