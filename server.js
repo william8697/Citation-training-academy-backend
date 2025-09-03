@@ -605,11 +605,19 @@ app.get('/api/cashiers', authenticateToken, async (req, res) => {
       role: 'cashier', 
       status: 'active' 
     })
-    .select('firstName email')
+    .select('firstName lastName email position _id')
     .sort({ firstName: 1 })
     .lean();
 
-    res.json(cashiers);
+    // Format the response to include all necessary details
+    const formattedCashiers = cashiers.map(cashier => ({
+      _id: cashier._id,
+      name: `${cashier.firstName} ${cashier.lastName}`,
+      email: cashier.email,
+      position: cashier.position
+    }));
+
+    res.json(formattedCashiers);
   } catch (error) {
     console.error('Error fetching cashiers:', error);
     res.status(500).json({ success: false, message: 'Error fetching cashiers' });
