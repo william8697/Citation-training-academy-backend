@@ -88,42 +88,66 @@ const SettingsSchema = new mongoose.Schema({
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }); 
 
+// Activity Schema (moved before the first declaration to avoid duplicate)
+const ActivitySchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  action: { 
+    type: String, 
+    required: true,
+    enum: [
+      'LOGIN',
+      'LOGOUT',
+      'USER_APPROVAL',
+      'USER_REJECTION',
+      'USER_CREATION',
+      'USER_UPDATE',
+      'USER_DELETION',
+      'PRODUCT_CREATION',
+      'PRODUCT_UPDATE',
+      'PRODUCT_DELETION',
+      'TRANSACTION_CREATION',
+      'SETTINGS_UPDATE',
+      'VIEW_PENDING_APPROVALS',
+      'VIEW_ACTIVE_USERS',
+      'VIEW_INACTIVE_USERS',
+      'VIEW_INVENTORY',
+      'VIEW_TRANSACTIONS',
+      'VIEW_ACTIVITIES',
+      'VIEW_DASHBOARD',
+      'SYSTEM_EVENT'
+    ]
+  },
+  details: { type: String },
+  ipAddress: { type: String },
+  userAgent: { type: String },
+  targetId: { type: mongoose.Schema.Types.ObjectId }, // ID of the affected entity
+  targetType: { type: String }, // Type of the affected entity (User, Product, etc.)
+  timestamp: { type: Date, default: Date.now }
+});
+
 const User = mongoose.model('User', UserSchema);
 const Product = mongoose.model('Product', ProductSchema);
 const Transaction = mongoose.model('Transaction', TransactionSchema);
 const Settings = mongoose.model('Settings', SettingsSchema);
-
-// Activity Schema (add this to your schemas)
-const ActivitySchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  action: { type: String, required: true },
-  details: { type: String },
-  ipAddress: { type: String },
-  userAgent: { type: String },
-  timestamp: { type: Date, default: Date.now }
-});
-
 const Activity = mongoose.model('Activity', ActivitySchema);
 
 // Utility function to log activities
-const logActivity = async (userId, action, details, req = null) => {
+const logActivity = async (userId, action, details, req = null, targetId = null, targetType = null) => {
   try {
     const activity = new Activity({
       userId,
       action,
       details,
       ipAddress: req ? req.ip || req.connection.remoteAddress : null,
-      userAgent: req ? req.get('User-Agent') : null
+      userAgent: req ? req.get('User-Agent') : null,
+      targetId,
+      targetType
     });
     await activity.save();
   } catch (error) {
     console.error('Error logging activity:', error);
   }
 };
-
-
-
-
 
 // Middleware
 app.use(helmet());
@@ -328,6 +352,9 @@ app.post('/api/auth/login', [
       { expiresIn: '24h' }
     );
 
+    // Log login activity
+    await logActivity(user._id, 'LOGIN', 'User logged in', req);
+
     res.json({
       success: true,
       message: 'Login successful',
@@ -365,400 +392,6 @@ app.post('/api/auth/verify', authenticateToken, (req, res) => {
     }
   });
 });
-
-// Admin routes
-app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    // Get dashboard stats
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-
-    const weekStart = new Date();
-    weekStart.setDate(weekStart.getDate() - 7);
-    
-    const monthStart = new Date();
-    monthStart.setMonth(monthStart.getMonth() - 1);
-
-    const [
-      pendingApprovals,
-      totalUsers,
-      todaySales,
-      weekSales,
-      monthSales,
-      lowStockItems,
-      totalProducts,
-      totalTransactions
-    ] = await Promise.all([
-      User.countDocuments({ status: 'pending' }),
-      User.countDocuments({ status: 'active' }),
-      Transaction.aggregate([
-        {
-          $match: {
-            timestamp: { $gte: todayStart, $lte: todayEnd },
-            status: 'completed'
-          }
-        },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: '$total' },
-            count: { $sum: 1 }
-          }
-        }
-      ]),
-      Transaction.aggregate([
-        {
-          $match: {
-            timestamp: { $gte: weekStart },
-            status: 'completed'
-          }
-        },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: '$total' }
-          }
-        }
-      ]),
-      Transaction.aggregate([
-        {
-          $match: {
-            timestamp: { $gte: monthStart },
-            status: 'completed'
-          }
-        },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: '$total' }
-          }
-        }
-      ]),
-      Product.countDocuments({ stock: { $lte: 10 } }),
-      Product.countDocuments(),
-      Transaction.countDocuments({ status: 'completed' })
-    ]);
-
-    const todaySalesTotal = todaySales.length > 0 ? todaySales[0].total : 0;
-    const todaySalesCount = todaySales.length > 0 ? todaySales[0].count : 0;
-    const weekSalesTotal = weekSales.length > 0 ? weekSales[0].total : 0;
-    const monthSalesTotal = monthSales.length > 0 ? monthSales[0].total : 0;
-
-    res.json({
-      success: true,
-      pendingApprovals,
-      totalUsers,
-      todaySales: todaySalesTotal,
-      todayTransactions: todaySalesCount,
-      weekSales: weekSalesTotal,
-      monthSales: monthSalesTotal,
-      lowStockItems,
-      totalProducts,
-      totalTransactions
-    });
-
-  } catch (error) {
-    console.error('Dashboard error:', error);
-    res.status(500).json({ success: false, message: 'Error loading dashboard data' });
-  }
-});
-
-// Product routes
-app.get('/api/products', authenticateToken, async (req, res) => {
-  try {
-    const { category, lowStock } = req.query;
-    let filter = {};
-    
-    if (category) filter.category = category;
-    if (lowStock === 'true') filter.stock = { $lte: 10 };
-
-    const products = await Product.find(filter).sort({ name: 1 });
-    res.json(products);
-  } catch (error) {
-    console.error('Products error:', error);
-    res.status(500).json({ success: false, message: 'Error loading products' });
-  }
-});
-
-// Transaction routes
-app.post('/api/transactions', authenticateToken, async (req, res) => {
-  try {
-    const { items, paymentMethod, paymentDetails, customer, discount = 0 } = req.body;
-    
-    // Calculate totals
-    let subtotal = 0;
-    const transactionItems = items.map(item => {
-      const itemTotal = item.price * item.quantity;
-      subtotal += itemTotal;
-      
-      return {
-        productId: item.productId,
-        name: item.name,
-        price: item.price,
-        quantity: item.quantity,
-        total: itemTotal
-      };
-    });
-
-    // Get tax rate from settings
-    const settings = await Settings.findOne();
-    const taxRate = settings?.taxRate || 16;
-    const tax = subtotal * (taxRate / 100);
-    const total = subtotal + tax - discount;
-
-    // Create transaction
-    const transaction = new Transaction({
-      transactionId: 'TXN' + Date.now() + Math.random().toString(36).substr(2, 9).toUpperCase(),
-      userId: req.user._id,
-      items: transactionItems,
-      subtotal,
-      tax,
-      discount,
-      total,
-      paymentMethod,
-      paymentDetails,
-      customer,
-      status: 'completed'
-    });
-
-    await transaction.save();
-
-    // Update product stock levels
-    for (const item of items) {
-      await Product.findByIdAndUpdate(
-        item.productId,
-        { $inc: { stock: -item.quantity } }
-      );
-    }
-
-    res.status(201).json({
-      success: true,
-      message: 'Transaction completed successfully',
-      transactionId: transaction.transactionId,
-      transaction
-    });
-
-  } catch (error) {
-    console.error('Transaction error:', error);
-    res.status(500).json({ success: false, message: 'Error processing transaction' });
-  }
-});
-
-// Serve frontend files
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-app.get('/admin', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
-});
-
-app.get('/login', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'login.html'));
-});
-
-
-
-
-
-// Get pending user approvals (return array only)
-app.get('/api/admin/pending-approvals', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const pendingUsers = await User.find({ status: 'pending' })
-      .select('-password')
-      .sort({ createdAt: -1 })
-      .lean();
-
-    // Log activity
-    await logActivity(req.user._id, 'VIEW_PENDING_APPROVALS', 'Viewed pending approvals', req);
-
-    res.json(pendingUsers); // Return array directly
-  } catch (error) {
-    console.error('Error fetching pending approvals:', error);
-    res.status(500).json({ success: false, message: 'Error fetching pending approvals' });
-  }
-});
-
-// Get active users (return array only)
-app.get('/api/admin/users/active', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const activeUsers = await User.find({ status: 'active' })
-      .select('-password')
-      .sort({ firstName: 1, lastName: 1 })
-      .lean();
-
-    // Log activity
-    await logActivity(req.user._id, 'VIEW_ACTIVE_USERS', 'Viewed active users', req);
-
-    res.json(activeUsers); // Return array directly
-  } catch (error) {
-    console.error('Error fetching active users:', error);
-    res.status(500).json({ success: false, message: 'Error fetching active users' });
-  }
-});
-
-// Get all inventory (return array only)
-app.get('/api/admin/inventory', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { lowStock } = req.query;
-    let filter = {};
-    
-    if (lowStock === 'true') {
-      filter.stock = { $lte: 10 };
-    }
-
-    const inventory = await Product.find(filter)
-      .sort({ name: 1 })
-      .lean();
-
-    // Log activity
-    await logActivity(req.user._id, 'VIEW_INVENTORY', 'Viewed inventory', req);
-
-    res.json(inventory); // Return array directly
-  } catch (error) {
-    console.error('Error fetching inventory:', error);
-    res.status(500).json({ success: false, message: 'Error fetching inventory' });
-  }
-});
-
-// Get all transactions (return array only)
-app.get('/api/admin/transactions', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { date } = req.query;
-    let filter = { status: 'completed' };
-    
-    if (date) {
-      const startDate = new Date(date);
-      const endDate = new Date(date);
-      endDate.setDate(endDate.getDate() + 1);
-      
-      filter.timestamp = {
-        $gte: startDate,
-        $lt: endDate
-      };
-    }
-
-    const transactions = await Transaction.find(filter)
-      .populate('userId', 'firstName lastName')
-      .sort({ timestamp: -1 })
-      .limit(100)
-      .lean();
-
-    // Log activity
-    await logActivity(req.user._id, 'VIEW_TRANSACTIONS', 'Viewed transactions', req);
-
-    res.json(transactions); // Return array directly
-  } catch (error) {
-    console.error('Error fetching transactions:', error);
-    res.status(500).json({ success: false, message: 'Error fetching transactions' });
-  }
-});
-
-// Get recent activities (return array only)
-app.get('/api/admin/activities', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    // For now, return recent transactions as activities
-    const recentTransactions = await Transaction.find({ status: 'completed' })
-      .populate('userId', 'firstName lastName')
-      .sort({ timestamp: -1 })
-      .limit(10)
-      .lean();
-
-    const activities = recentTransactions.map(transaction => ({
-      _id: transaction._id,
-      timestamp: transaction.timestamp,
-      userId: transaction.userId,
-      action: 'Sale Completed',
-      details: `Transaction ${transaction.transactionId} for $${transaction.total}`
-    }));
-
-    // Log activity
-    await logActivity(req.user._id, 'VIEW_ACTIVITIES', 'Viewed activities', req);
-
-    res.json(activities); // Return array directly
-  } catch (error) {
-    console.error('Error fetching activities:', error);
-    res.status(500).json({ success: false, message: 'Error fetching activities' });
-  }
-});
-
-// Get inactive users (new endpoint for the inactive tab)
-app.get('/api/admin/users/inactive', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const inactiveUsers = await User.find({ 
-      status: { $in: ['inactive', 'suspended'] } 
-    })
-      .select('-password')
-      .sort({ firstName: 1, lastName: 1 })
-      .lean();
-
-    // Log activity
-    await logActivity(req.user._id, 'VIEW_INACTIVE_USERS', 'Viewed inactive users', req);
-
-    res.json(inactiveUsers); // Return array directly
-  } catch (error) {
-    console.error('Error fetching inactive users:', error);
-    res.status(500).json({ success: false, message: 'Error fetching inactive users' });
-  }
-});
-
-// Enhanced Activity Schema with more action types
-const ActivitySchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  action: { 
-    type: String, 
-    required: true,
-    enum: [
-      'LOGIN',
-      'LOGOUT',
-      'USER_APPROVAL',
-      'USER_REJECTION',
-      'USER_CREATION',
-      'USER_UPDATE',
-      'USER_DELETION',
-      'PRODUCT_CREATION',
-      'PRODUCT_UPDATE',
-      'PRODUCT_DELETION',
-      'TRANSACTION_CREATION',
-      'SETTINGS_UPDATE',
-      'VIEW_PENDING_APPROVALS',
-      'VIEW_ACTIVE_USERS',
-      'VIEW_INACTIVE_USERS',
-      'VIEW_INVENTORY',
-      'VIEW_TRANSACTIONS',
-      'VIEW_ACTIVITIES',
-      'VIEW_DASHBOARD',
-      'SYSTEM_EVENT'
-    ]
-  },
-  details: { type: String },
-  ipAddress: { type: String },
-  userAgent: { type: String },
-  targetId: { type: mongoose.Schema.Types.ObjectId }, // ID of the affected entity
-  targetType: { type: String }, // Type of the affected entity (User, Product, etc.)
-  timestamp: { type: Date, default: Date.now }
-});
-
-// Enhanced logActivity function
-const logActivity = async (userId, action, details, req = null, targetId = null, targetType = null) => {
-  try {
-    const activity = new Activity({
-      userId,
-      action,
-      details,
-      ipAddress: req ? req.ip || req.connection.remoteAddress : null,
-      userAgent: req ? req.get('User-Agent') : null,
-      targetId,
-      targetType
-    });
-    await activity.save();
-  } catch (error) {
-    console.error('Error logging activity:', error);
-  }
-};
 
 // Enhanced dashboard endpoint to include more stats
 app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res) => {
@@ -892,9 +525,299 @@ app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res
   }
 });
 
+// Product routes
+app.get('/api/products', authenticateToken, async (req, res) => {
+  try {
+    const { category, lowStock } = req.query;
+    let filter = {};
+    
+    if (category) filter.category = category;
+    if (lowStock === 'true') filter.stock = { $lte: 10 };
 
+    const products = await Product.find(filter).sort({ name: 1 });
+    res.json(products);
+  } catch (error) {
+    console.error('Products error:', error);
+    res.status(500).json({ success: false, message: 'Error loading products' });
+  }
+});
 
+// Transaction routes
+app.post('/api/transactions', authenticateToken, async (req, res) => {
+  try {
+    const { items, paymentMethod, paymentDetails, customer, discount = 0 } = req.body;
+    
+    // Calculate totals
+    let subtotal = 0;
+    const transactionItems = items.map(item => {
+      const itemTotal = item.price * item.quantity;
+      subtotal += itemTotal;
+      
+      return {
+        productId: item.productId,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity,
+        total: itemTotal
+      };
+    });
 
+    // Get tax rate from settings
+    const settings = await Settings.findOne();
+    const taxRate = settings?.taxRate || 16;
+    const tax = subtotal * (taxRate / 100);
+    const total = subtotal + tax - discount;
+
+    // Create transaction
+    const transaction = new Transaction({
+      transactionId: 'TXN' + Date.now() + Math.random().toString(36).substr(2, 9).toUpperCase(),
+      userId: req.user._id,
+      items: transactionItems,
+      subtotal,
+      tax,
+      discount,
+      total,
+      paymentMethod,
+      paymentDetails,
+      customer,
+      status: 'completed'
+    });
+
+    await transaction.save();
+
+    // Update product stock levels
+    for (const item of items) {
+      await Product.findByIdAndUpdate(
+        item.productId,
+        { $inc: { stock: -item.quantity } }
+      );
+    }
+
+    // Log transaction activity
+    await logActivity(
+      req.user._id, 
+      'TRANSACTION_CREATION', 
+      `Created transaction ${transaction.transactionId} for ${total}`, 
+      req, 
+      transaction._id, 
+      'Transaction'
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Transaction completed successfully',
+      transactionId: transaction.transactionId,
+      transaction
+    });
+
+  } catch (error) {
+    console.error('Transaction error:', error);
+    res.status(500).json({ success: false, message: 'Error processing transaction' });
+  }
+});
+
+// Get pending user approvals (return array only)
+app.get('/api/admin/pending-approvals', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const pendingUsers = await User.find({ status: 'pending' })
+      .select('-password')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Log activity
+    await logActivity(req.user._id, 'VIEW_PENDING_APPROVALS', 'Viewed pending approvals', req);
+
+    res.json(pendingUsers); // Return array directly
+  } catch (error) {
+    console.error('Error fetching pending approvals:', error);
+    res.status(500).json({ success: false, message: 'Error fetching pending approvals' });
+  }
+});
+
+// Get active users (return array only)
+app.get('/api/admin/users/active', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const activeUsers = await User.find({ status: 'active' })
+      .select('-password')
+      .sort({ firstName: 1, lastName: 1 })
+      .lean();
+
+    // Log activity
+    await logActivity(req.user._id, 'VIEW_ACTIVE_USERS', 'Viewed active users', req);
+
+    res.json(activeUsers); // Return array directly
+  } catch (error) {
+    console.error('Error fetching active users:', error);
+    res.status(500).json({ success: false, message: 'Error fetching active users' });
+  }
+});
+
+// Get all inventory (return array only)
+app.get('/api/admin/inventory', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { lowStock } = req.query;
+    let filter = {};
+    
+    if (lowStock === 'true') {
+      filter.stock = { $lte: 10 };
+    }
+
+    const inventory = await Product.find(filter)
+      .sort({ name: 1 })
+      .lean();
+
+    // Log activity
+    await logActivity(req.user._id, 'VIEW_INVENTORY', 'Viewed inventory', req);
+
+    res.json(inventory); // Return array directly
+  } catch (error) {
+    console.error('Error fetching inventory:', error);
+    res.status(500).json({ success: false, message: 'Error fetching inventory' });
+  }
+});
+
+// Get all transactions (return array only)
+app.get('/api/admin/transactions', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { date } = req.query;
+    let filter = { status: 'completed' };
+    
+    if (date) {
+      const startDate = new Date(date);
+      const endDate = new Date(date);
+      endDate.setDate(endDate.getDate() + 1);
+      
+      filter.timestamp = {
+        $gte: startDate,
+        $lt: endDate
+      };
+    }
+
+    const transactions = await Transaction.find(filter)
+      .populate('userId', 'firstName lastName')
+      .sort({ timestamp: -1 })
+      .limit(100)
+      .lean();
+
+    // Log activity
+    await logActivity(req.user._id, 'VIEW_TRANSACTIONS', 'Viewed transactions', req);
+
+    res.json(transactions); // Return array directly
+  } catch (error) {
+    console.error('Error fetching transactions:', error);
+    res.status(500).json({ success: false, message: 'Error fetching transactions' });
+  }
+});
+
+// Get recent activities (return array only)
+app.get('/api/admin/activities', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const activities = await Activity.find()
+      .populate('userId', 'firstName lastName')
+      .sort({ timestamp: -1 })
+      .limit(50)
+      .lean();
+
+    // Log activity
+    await logActivity(req.user._id, 'VIEW_ACTIVITIES', 'Viewed activities', req);
+
+    res.json(activities); // Return array directly
+  } catch (error) {
+    console.error('Error fetching activities:', error);
+    res.status(500).json({ success: false, message: 'Error fetching activities' });
+  }
+});
+
+// Get inactive users (new endpoint for the inactive tab)
+app.get('/api/admin/users/inactive', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const inactiveUsers = await User.find({ 
+      status: { $in: ['inactive', 'suspended'] } 
+    })
+      .select('-password')
+      .sort({ firstName: 1, lastName: 1 })
+      .lean();
+
+    // Log activity
+    await logActivity(req.user._id, 'VIEW_INACTIVE_USERS', 'Viewed inactive users', req);
+
+    res.json(inactiveUsers); // Return array directly
+  } catch (error) {
+    console.error('Error fetching inactive users:', error);
+    res.status(500).json({ success: false, message: 'Error fetching inactive users' });
+  }
+});
+
+// User approval endpoint
+app.post('/api/admin/users/:id/approve', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.status = 'active';
+    user.updatedBy = req.user._id;
+    await user.save();
+
+    // Log approval activity
+    await logActivity(
+      req.user._id, 
+      'USER_APPROVAL', 
+      `Approved user: ${user.firstName} ${user.lastName} (${user.email})`, 
+      req, 
+      user._id, 
+      'User'
+    );
+
+    res.json({ success: true, message: 'User approved successfully' });
+  } catch (error) {
+    console.error('Error approving user:', error);
+    res.status(500).json({ success: false, message: 'Error approving user' });
+  }
+});
+
+// User rejection endpoint
+app.post('/api/admin/users/:id/reject', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    user.status = 'inactive';
+    user.updatedBy = req.user._id;
+    await user.save();
+
+    // Log rejection activity
+    await logActivity(
+      req.user._id, 
+      'USER_REJECTION', 
+      `Rejected user: ${user.firstName} ${user.lastName} (${user.email})`, 
+      req, 
+      user._id, 
+      'User'
+    );
+
+    res.json({ success: true, message: 'User rejected successfully' });
+  } catch (error) {
+    console.error('Error rejecting user:', error);
+    res.status(500).json({ success: false, message: 'Error rejecting user' });
+  }
+});
+
+// Serve frontend files
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+app.get('/login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
 
 // Error handling middleware
 app.use((error, req, res, next) => {
