@@ -56,6 +56,8 @@ const ProductSchema = new mongoose.Schema({
 const TransactionSchema = new mongoose.Schema({
   transactionId: { type: String, required: true, unique: true },
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  cashierId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  cashierName: { type: String },
   items: [{
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
     name: { type: String, required: true },
@@ -69,6 +71,8 @@ const TransactionSchema = new mongoose.Schema({
   total: { type: Number, required: true },
   paymentMethod: { type: String, enum: ['cash', 'mpesa', 'card', 'bank_transfer'], required: true },
   paymentDetails: { type: Object },
+  cashReceived: { type: Number },
+  change: { type: Number },
   status: { type: String, enum: ['pending', 'completed', 'refunded', 'failed'], default: 'completed' },
   timestamp: { type: Date, default: Date.now },
   customer: {
@@ -246,6 +250,114 @@ const initializeDefaultSettings = async () => {
   }
 };
 
+// Initialize sample data
+const initializeSampleData = async () => {
+  try {
+    // Check if sample products exist
+    const productCount = await Product.countDocuments();
+    if (productCount === 0) {
+      const sampleProducts = [
+        {
+          name: 'Luxury Face Cream',
+          sku: 'LFC1001',
+          price: 45.99,
+          stock: 50,
+          category: 'skincare',
+          description: 'Premium anti-aging face cream with natural ingredients'
+        },
+        {
+          name: 'Hydrating Serum',
+          sku: 'HS2002',
+          price: 32.50,
+          stock: 75,
+          category: 'skincare',
+          description: 'Deep hydrating serum for all skin types'
+        },
+        {
+          name: 'Matte Lipstick - Ruby Red',
+          sku: 'MLR3003',
+          price: 18.75,
+          stock: 5,
+          category: 'makeup',
+          description: 'Long-lasting matte lipstick in ruby red'
+        },
+        {
+          name: 'Volume Mascara',
+          sku: 'VM4004',
+          price: 24.99,
+          stock: 30,
+          category: 'makeup',
+          description: 'Volumizing mascara for dramatic lashes'
+        },
+        {
+          name: 'Scented Body Lotion',
+          sku: 'SBL5005',
+          price: 15.25,
+          stock: 2,
+          category: 'bodycare',
+          description: 'Moisturizing body lotion with floral scent'
+        },
+        {
+          name: 'Exfoliating Scrub',
+          sku: 'ES6006',
+          price: 28.50,
+          stock: 40,
+          category: 'bodycare',
+          description: 'Gentle exfoliating scrub for smooth skin'
+        }
+      ];
+
+      await Product.insertMany(sampleProducts);
+      console.log('Sample products created successfully');
+    }
+
+    // Check if sample cashiers exist
+    const cashierCount = await User.countDocuments({ role: 'cashier' });
+    if (cashierCount === 0) {
+      const saltRounds = 12;
+      const hashedPassword = await bcrypt.hash('Cashier@123', saltRounds);
+      
+      const sampleCashiers = [
+        {
+          firstName: 'Sarah',
+          lastName: 'Johnson',
+          email: 'sarah@algracia.com',
+          password: hashedPassword,
+          company: 'Algracia Cosmetics',
+          position: 'Senior Cashier',
+          role: 'cashier',
+          status: 'active'
+        },
+        {
+          firstName: 'Michael',
+          lastName: 'Williams',
+          email: 'michael@algracia.com',
+          password: hashedPassword,
+          company: 'Algracia Cosmetics',
+          position: 'Cashier',
+          role: 'cashier',
+          status: 'active'
+        },
+        {
+          firstName: 'Emily',
+          lastName: 'Davis',
+          email: 'emily@algracia.com',
+          password: hashedPassword,
+          company: 'Algracia Cosmetics',
+          position: 'Cashier',
+          role: 'cashier',
+          status: 'active'
+        }
+      ];
+
+      await User.insertMany(sampleCashiers);
+      console.log('Sample cashiers created successfully');
+    }
+  } catch (error) {
+    console.error('Error creating sample data:', error);
+  }
+};
+
 // Routes
 
 // Health check endpoint
@@ -382,8 +494,8 @@ app.post('/api/auth/verify', authenticateToken, (req, res) => {
   });
 });
 
-// Dashboard endpoint
-app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res) => {
+// Dashboard endpoint - FIXED
+app.get('/api/dashboard', authenticateToken, async (req, res) => {
   try {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
@@ -391,26 +503,14 @@ app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
 
-    const weekStart = new Date();
-    weekStart.setDate(weekStart.getDate() - 7);
-    
-    const monthStart = new Date();
-    monthStart.setMonth(monthStart.getMonth() - 1);
-
+    // Calculate totals for dashboard
     const [
-      pendingApprovals,
-      totalUsers,
-      todaySales,
-      weekSales,
-      monthSales,
-      lowStockItems,
+      todaySalesData,
       totalProducts,
-      totalTransactions,
-      recentTransactions,
-      revenueStats
+      lowStockItems,
+      recentTransactions
     ] = await Promise.all([
-      User.countDocuments({ status: 'pending' }),
-      User.countDocuments({ status: 'active' }),
+      // Today's sales
       Transaction.aggregate([
         {
           $match: {
@@ -426,85 +526,30 @@ app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res
           }
         }
       ]),
-      Transaction.aggregate([
-        {
-          $match: {
-            timestamp: { $gte: weekStart },
-            status: 'completed'
-          }
-        },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: '$total' }
-          }
-        }
-      ]),
-      Transaction.aggregate([
-        {
-          $match: {
-            timestamp: { $gte: monthStart },
-            status: 'completed'
-          }
-        },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: '$total' }
-          }
-        }
-      ]),
-      Product.countDocuments({ stock: { $lte: 10, $gt: 0 } }),
+      // Total products
       Product.countDocuments(),
-      Transaction.countDocuments({ status: 'completed' }),
+      // Low stock items
+      Product.countDocuments({ stock: { $lte: 10, $gt: 0 } }),
+      // Recent transactions
       Transaction.find({ status: 'completed' })
         .sort({ timestamp: -1 })
         .limit(5)
         .populate('userId', 'firstName lastName')
-        .lean(),
-      Transaction.aggregate([
-        {
-          $match: {
-            status: 'completed',
-            timestamp: { $gte: monthStart }
-          }
-        },
-        {
-          $group: {
-            _id: {
-              year: { $year: '$timestamp' },
-              month: { $month: '$timestamp' },
-              day: { $dayOfMonth: '$timestamp' }
-            },
-            dailyRevenue: { $sum: '$total' },
-            transactionCount: { $sum: 1 }
-          }
-        },
-        { $sort: { '_id.year': -1, '_id.month': -1, '_id.day': -1 } },
-        { $limit: 30 }
-      ])
+        .lean()
     ]);
 
-    const todaySalesTotal = todaySales.length > 0 ? todaySales[0].total : 0;
-    const todaySalesCount = todaySales.length > 0 ? todaySales[0].count : 0;
-    const weekSalesTotal = weekSales.length > 0 ? weekSales[0].total : 0;
-    const monthSalesTotal = monthSales.length > 0 ? monthSales[0].total : 0;
+    const todaySales = todaySalesData.length > 0 ? todaySalesData[0].total : 0;
+    const todayTransactions = todaySalesData.length > 0 ? todaySalesData[0].count : 0;
 
     await logActivity(req.user._id, 'VIEW_DASHBOARD', 'Viewed dashboard', req);
 
     res.json({
       success: true,
-      pendingApprovals,
-      totalUsers,
-      todaySales: todaySalesTotal,
-      todayTransactions: todaySalesCount,
-      weekSales: weekSalesTotal,
-      monthSales: monthSalesTotal,
-      lowStockItems,
+      todaySales,
+      todayTransactions,
       totalProducts,
-      totalTransactions,
-      recentTransactions,
-      revenueStats
+      lowStockItems,
+      recentTransactions
     });
 
   } catch (error) {
@@ -513,7 +558,7 @@ app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res
   }
 });
 
-// Product routes
+// Product routes - FIXED
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
     const { category, lowStock } = req.query;
@@ -530,10 +575,51 @@ app.get('/api/products', authenticateToken, async (req, res) => {
   }
 });
 
-// Transaction routes
+// Inventory endpoint - FIXED
+app.get('/api/inventory', authenticateToken, async (req, res) => {
+  try {
+    const { lowStock } = req.query;
+    let filter = {};
+    
+    if (lowStock === 'true') {
+      filter.stock = { $lte: 10 };
+    }
+
+    const inventory = await Product.find(filter)
+      .sort({ name: 1 })
+      .lean();
+
+    await logActivity(req.user._id, 'VIEW_INVENTORY', 'Viewed inventory', req);
+
+    res.json(inventory);
+  } catch (error) {
+    console.error('Error fetching inventory:', error);
+    res.status(500).json({ success: false, message: 'Error fetching inventory' });
+  }
+});
+
+// Cashiers endpoint - FIXED
+app.get('/api/cashiers', authenticateToken, async (req, res) => {
+  try {
+    const cashiers = await User.find({ 
+      role: 'cashier', 
+      status: 'active' 
+    })
+    .select('firstName lastName email position')
+    .sort({ firstName: 1 })
+    .lean();
+
+    res.json(cashiers);
+  } catch (error) {
+    console.error('Error fetching cashiers:', error);
+    res.status(500).json({ success: false, message: 'Error fetching cashiers' });
+  }
+});
+
+// Transaction routes - FIXED
 app.post('/api/transactions', authenticateToken, async (req, res) => {
   try {
-    const { items, paymentMethod, paymentDetails, customer, discount = 0 } = req.body;
+    const { items, paymentMethod, paymentDetails, customer, discount = 0, cashReceived, change, cashierId, cashierName } = req.body;
     
     let subtotal = 0;
     const transactionItems = items.map(item => {
@@ -557,6 +643,8 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
     const transaction = new Transaction({
       transactionId: 'TXN' + Date.now() + Math.random().toString(36).substr(2, 9).toUpperCase(),
       userId: req.user._id,
+      cashierId,
+      cashierName,
       items: transactionItems,
       subtotal,
       tax,
@@ -564,12 +652,15 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
       total,
       paymentMethod,
       paymentDetails,
+      cashReceived,
+      change,
       customer,
       status: 'completed'
     });
 
     await transaction.save();
 
+    // Update product stock levels
     for (const item of items) {
       await Product.findByIdAndUpdate(
         item.productId,
@@ -596,6 +687,223 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Transaction error:', error);
     res.status(500).json({ success: false, message: 'Error processing transaction' });
+  }
+});
+
+// M-Pesa payment endpoint - FIXED
+app.post('/api/mpesa/payment', authenticateToken, async (req, res) => {
+  try {
+    const { phoneNumber, amount, cart, cashierId, cashierName } = req.body;
+    
+    if (!phoneNumber) {
+      return res.status(400).json({ success: false, message: 'Phone number is required' });
+    }
+
+    // In a real implementation, you would integrate with M-Pesa API here
+    // This is a simulation of a successful payment
+    const transactionId = 'MPESA' + Date.now() + Math.random().toString(36).substr(2, 9).toUpperCase();
+    
+    // Create transaction record
+    let subtotal = 0;
+    const transactionItems = cart.map(item => {
+      const itemTotal = item.price * item.quantity;
+      subtotal += itemTotal;
+      
+      return {
+        productId: item.productId,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity,
+        total: itemTotal
+      };
+    });
+
+    const settings = await Settings.findOne();
+    const taxRate = settings?.taxRate || 16;
+    const tax = subtotal * (taxRate / 100);
+    const total = subtotal + tax;
+
+    const transaction = new Transaction({
+      transactionId,
+      userId: req.user._id,
+      cashierId,
+      cashierName,
+      items: transactionItems,
+      subtotal,
+      tax,
+      total,
+      paymentMethod: 'mpesa',
+      paymentDetails: {
+        phoneNumber,
+        amount
+      },
+      status: 'completed'
+    });
+
+    await transaction.save();
+
+    // Update product stock levels
+    for (const item of cart) {
+      await Product.findByIdAndUpdate(
+        item.productId,
+        { $inc: { stock: -item.quantity } }
+      );
+    }
+
+    await logActivity(
+      req.user._id, 
+      'TRANSACTION_CREATION', 
+      `Created M-Pesa transaction ${transaction.transactionId} for ${total}`, 
+      req, 
+      transaction._id, 
+      'Transaction'
+    );
+
+    res.json({
+      success: true,
+      message: 'M-Pesa payment processed successfully',
+      transactionId: transaction.transactionId
+    });
+
+  } catch (error) {
+    console.error('M-Pesa payment error:', error);
+    res.status(500).json({ success: false, message: 'Error processing M-Pesa payment' });
+  }
+});
+
+// Card payment endpoint - FIXED
+app.post('/api/card/payment', authenticateToken, async (req, res) => {
+  try {
+    const { cardNumber, expiryDate, cvv, amount, cart, cardType, cashierId, cashierName } = req.body;
+    
+    if (!cardNumber || !expiryDate || !cvv) {
+      return res.status(400).json({ success: false, message: 'Card details are required' });
+    }
+
+    // In a real implementation, you would integrate with a payment gateway here
+    // This is a simulation of a successful payment
+    const transactionId = 'CARD' + Date.now() + Math.random().toString(36).substr(2, 9).toUpperCase();
+    
+    // Create transaction record
+    let subtotal = 0;
+    const transactionItems = cart.map(item => {
+      const itemTotal = item.price * item.quantity;
+      subtotal += itemTotal;
+      
+      return {
+        productId: item.productId,
+        name: item.name,
+        price: item.price,
+        quantity: item.quantity,
+        total: itemTotal
+      };
+    });
+
+    const settings = await Settings.findOne();
+    const taxRate = settings?.taxRate || 16;
+    const tax = subtotal * (taxRate / 100);
+    const total = subtotal + tax;
+
+    const transaction = new Transaction({
+      transactionId,
+      userId: req.user._id,
+      cashierId,
+      cashierName,
+      items: transactionItems,
+      subtotal,
+      tax,
+      total,
+      paymentMethod: 'card',
+      paymentDetails: {
+        cardType,
+        lastFour: cardNumber.slice(-4),
+        expiryDate
+      },
+      status: 'completed'
+    });
+
+    await transaction.save();
+
+    // Update product stock levels
+    for (const item of cart) {
+      await Product.findByIdAndUpdate(
+        item.productId,
+        { $inc: { stock: -item.quantity } }
+      );
+    }
+
+    await logActivity(
+      req.user._id, 
+      'TRANSACTION_CREATION', 
+      `Created card transaction ${transaction.transactionId} for ${total}`, 
+      req, 
+      transaction._id, 
+      'Transaction'
+    );
+
+    res.json({
+      success: true,
+      message: 'Card payment processed successfully',
+      transactionId: transaction.transactionId
+    });
+
+  } catch (error) {
+    console.error('Card payment error:', error);
+    res.status(500).json({ success: false, message: 'Error processing card payment' });
+  }
+});
+
+// Add product endpoint - FIXED
+app.post('/api/products', authenticateToken, [
+  body('name').notEmpty().withMessage('Product name is required'),
+  body('sku').notEmpty().withMessage('SKU is required'),
+  body('price').isNumeric().withMessage('Price must be a number'),
+  body('stock').isInt({ min: 0 }).withMessage('Stock must be a non-negative integer')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: errors.array()[0].msg });
+    }
+
+    const { name, sku, price, stock, category, description } = req.body;
+
+    // Check if product with same SKU already exists
+    const existingProduct = await Product.findOne({ sku });
+    if (existingProduct) {
+      return res.status(400).json({ success: false, message: 'Product with this SKU already exists' });
+    }
+
+    const product = new Product({
+      name,
+      sku,
+      price,
+      stock,
+      category,
+      description,
+      createdBy: req.user._id
+    });
+
+    await product.save();
+
+    await logActivity(
+      req.user._id, 
+      'PRODUCT_CREATION', 
+      `Created product: ${name} (${sku})`, 
+      req, 
+      product._id, 
+      'Product'
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Product created successfully',
+      product
+    });
+
+  } catch (error) {
+    console.error('Error creating product:', error);
+    res.status(500).json({ success: false, message: 'Error creating product' });
   }
 });
 
@@ -1173,6 +1481,7 @@ async function startServer() {
   try {
     await initializeDefaultAdmin();
     await initializeDefaultSettings();
+    await initializeSampleData();
     
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
