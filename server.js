@@ -15,29 +15,44 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || '17581758Na';
 
-// Redis Configuration
-const redisClient = redis.createClient({
-  host: process.env.REDIS_HOST || 'redis-14450.c276.us-east-1-2.ec2.redns.redis-cloud.com',
-  port: process.env.REDIS_PORT || 14450,
-  password: process.env.REDIS_PASSWORD || 'qjXgsg0YrsLaSumlEW9HkIZbvLjXEwXR'
-});
+// Redis Configuration with better error handling
+let redisClient;
+try {
+  redisClient = redis.createClient({
+    socket: {
+      host: process.env.REDIS_HOST || 'redis-14450.c276.us-east-1-2.ec2.redns.redis-cloud.com',
+      port: process.env.REDIS_PORT || 14450
+    },
+    password: process.env.REDIS_PASSWORD || 'qjXgsg0YrsLaSumlEW9HkIZbvLjXEwXR',
+    legacyMode: false
+  });
 
-redisClient.on('error', (err) => {
-  console.log('Redis Client Error', err);
-});
+  redisClient.on('error', (err) => {
+    console.log('Redis Client Error', err);
+  });
 
-redisClient.connect().then(() => {
-  console.log('Connected to Redis');
-});
+  redisClient.on('connect', () => {
+    console.log('Connected to Redis');
+  });
+
+  redisClient.connect();
+} catch (error) {
+  console.log('Redis connection failed, proceeding without cache:', error.message);
+  redisClient = null;
+}
 
 // MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://your-mongodb-uri';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/algracia-cosmetics';
 mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
+}).then(() => {
+  console.log('Connected to MongoDB');
+}).catch((error) => {
+  console.error('MongoDB connection error:', error);
 });
 
-// MongoDB Models
+// MongoDB Models (same as before)
 const UserSchema = new mongoose.Schema({
   firstName: { type: String, required: true },
   lastName: { type: String, required: true },
@@ -189,7 +204,12 @@ const generateTransactionId = () => {
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ success: true, message: 'Server is running', timestamp: new Date() });
+  res.json({ 
+    success: true, 
+    message: 'Server is running', 
+    timestamp: new Date(),
+    redis: redisClient ? 'connected' : 'disabled'
+  });
 });
 
 // Authentication routes
@@ -287,19 +307,25 @@ app.post('/api/auth/login', [
       { expiresIn: '24h' }
     );
 
-    // Cache user data in Redis
-    const userData = {
-      id: user._id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      role: user.role,
-      company: user.company,
-      position: user.position,
-      initials: user.firstName[0] + user.lastName[0]
-    };
+    // Cache user data in Redis if available
+    if (redisClient) {
+      const userData = {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        role: user.role,
+        company: user.company,
+        position: user.position,
+        initials: user.firstName[0] + user.lastName[0]
+      };
 
-    await redisClient.setEx(`user:${user._id}`, 86400, JSON.stringify(userData));
+      try {
+        await redisClient.setEx(`user:${user._id}`, 86400, JSON.stringify(userData));
+      } catch (redisError) {
+        console.error('Redis cache error:', redisError);
+      }
+    }
 
     // Log activity
     await logActivity({ user }, 'USER_LOGIN', `User logged in: ${email}`);
@@ -308,7 +334,16 @@ app.post('/api/auth/login', [
       success: true,
       message: 'Login successful',
       token,
-      user: userData
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        role: user.role,
+        company: user.company,
+        position: user.position,
+        initials: user.firstName[0] + user.lastName[0]
+      }
     });
 
   } catch (error) {
@@ -807,6 +842,8 @@ app.listen(PORT, () => {
 process.on('SIGINT', async () => {
   console.log('Shutting down gracefully...');
   await mongoose.connection.close();
-  await redisClient.quit();
+  if (redisClient) {
+    await redisClient.quit();
+  }
   process.exit(0);
 });
