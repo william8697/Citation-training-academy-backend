@@ -96,7 +96,7 @@ const Settings = mongoose.model('Settings', SettingsSchema);
 // Middleware
 app.use(helmet());
 app.use(cors({
-  origin: ['https://citation-training-academy.vercel.app', 'http://localhost:3000', 'http://localhost:5500'],
+  origin: ['https://citation-training-academy.vercel.app', 'http://localhost:3000', 'http://localhost:5500', 'http://127.0.0.1:5500'],
   credentials: true
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -170,6 +170,8 @@ const initializeDefaultAdmin = async () => {
       console.log('Default admin user created successfully');
       console.log(`Email: ${adminEmail}`);
       console.log(`Password: ${defaultPassword}`);
+    } else {
+      console.log('Default admin user already exists');
     }
   } catch (error) {
     console.error('Error creating default admin:', error);
