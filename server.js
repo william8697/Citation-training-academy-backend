@@ -1,12 +1,8 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
-const { body, validationResult } = require('express-validator');
-const { OAuth2Client } = require('google-auth-library');
 const redis = require('redis');
 require('dotenv').config();
 
@@ -18,94 +14,80 @@ const JWT_SECRET = process.env.JWT_SECRET || '17581758Na';
 const redisClient = redis.createClient({
   host: process.env.REDIS_HOST || 'redis-14450.c276.us-east-1-2.ec2.redns.redis-cloud.com',
   port: process.env.REDIS_PORT || 14450,
-  password: process.env.REDIS_PASSWORD || 'qjXgsg0YrsLaSumlEW9HkIZbvLjXEwXR'
+  password: process.env.REDIS_PASSWORD || 'qjXgsg0YrsLaSumlEW9HkIZbvLjXEwXR',
 });
 
 redisClient.on('error', (err) => console.log('Redis Client Error', err));
 redisClient.connect();
 
 // MongoDB connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/algracia_pos';
-mongoose.connect(MONGODB_URI, {
+mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/algracia_pos', {
   useNewUrlParser: true,
   useUnifiedTopology: true,
-})
-.then(() => console.log('MongoDB connected successfully'))
-.catch(err => console.log('MongoDB connection error:', err));
+});
 
 // Middleware
-app.use(helmet());
-app.use(cors({
-  origin: ['https://citation-training-academy.vercel.app', 'http://localhost:3000'],
-  credentials: true
-}));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
-});
-app.use(limiter);
+app.use(cors());
+app.use(express.json());
 
 // Models
 const UserSchema = new mongoose.Schema({
-  firstName: { type: String, required: true },
-  lastName: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
-  company: { type: String, required: true },
-  position: { type: String, required: true },
-  password: { type: String, required: function() { return !this.googleId; } },
-  googleId: { type: String, unique: true, sparse: true },
-  role: { type: String, default: 'cashier', enum: ['cashier', 'manager', 'admin'] },
-  isApproved: { type: Boolean, default: false },
-  createdAt: { type: Date, default: Date.now }
+  firstName: String,
+  lastName: String,
+  email: { type: String, unique: true },
+  company: String,
+  position: String,
+  password: String,
+  role: { type: String, default: 'cashier' },
+  status: { type: String, default: 'pending' }, // pending, approved, rejected, inactive
+  createdAt: { type: Date, default: Date.now },
 });
 
 const ProductSchema = new mongoose.Schema({
-  name: { type: String, required: true },
-  sku: { type: String, required: true, unique: true },
-  price: { type: Number, required: true },
-  stock: { type: Number, required: true, default: 0 },
-  category: { type: String, default: 'cosmetics' },
-  description: String,
-  image: String,
-  createdAt: { type: Date, default: Date.now }
+  name: String,
+  sku: { type: String, unique: true },
+  price: Number,
+  stock: Number,
+  category: String,
+  createdAt: { type: Date, default: Date.now },
 });
 
 const TransactionSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   items: [{
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
     name: String,
     price: Number,
-    quantity: Number,
-    total: Number
+    quantity: Number
   }],
-  subtotal: { type: Number, required: true },
-  tax: { type: Number, default: 0 },
-  total: { type: Number, required: true },
-  paymentMethod: { 
-    type: String, 
-    required: true, 
-    enum: ['cash', 'mpesa', 'card_visa', 'card_mastercard'] 
-  },
-  paymentDetails: {
-    phoneNumber: String, // for M-Pesa
-    cardLast4: String,   // for card payments
-    cashReceived: Number, // for cash payments
-    change: Number       // for cash payments
-  },
-  status: { type: String, default: 'completed', enum: ['completed', 'refunded', 'failed'] },
-  timestamp: { type: Date, default: Date.now }
+  total: Number,
+  paymentMethod: String,
+  cashReceived: Number,
+  change: Number,
+  timestamp: { type: Date, default: Date.now },
+});
+
+const ActivitySchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  action: String,
+  details: String,
+  timestamp: { type: Date, default: Date.now },
+});
+
+const SettingSchema = new mongoose.Schema({
+  companyName: { type: String, default: 'Algracia Cosmetics' },
+  currency: { type: String, default: 'USD' },
+  taxRate: { type: Number, default: 16 },
+  receiptFooter: { type: String, default: 'Thank you for shopping with us!' },
 });
 
 const User = mongoose.model('User', UserSchema);
 const Product = mongoose.model('Product', ProductSchema);
 const Transaction = mongoose.model('Transaction', TransactionSchema);
+const Activity = mongoose.model('Activity', ActivitySchema);
+const Setting = mongoose.model('Setting', SettingSchema);
 
-// Authentication middleware
+// Auth middleware
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -115,728 +97,638 @@ const authenticateToken = async (req, res, next) => {
   }
 
   try {
-    // Check if token is blacklisted in Redis
-    const isBlacklisted = await redisClient.get(`blacklist_${token}`);
-    if (isBlacklisted) {
-      return res.status(401).json({ success: false, message: 'Token has been invalidated' });
-    }
-
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await User.findById(decoded.userId).select('-password');
+    const user = await User.findById(decoded.userId);
     
     if (!user) {
-      return res.status(401).json({ success: false, message: 'User not found' });
+      return res.status(403).json({ success: false, message: 'Invalid token' });
     }
-    
-    if (!user.isApproved) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Account pending approval. Please contact administrator.' 
-      });
-    }
-    
+
     req.user = user;
     next();
   } catch (error) {
-    return res.status(403).json({ success: false, message: 'Invalid or expired token' });
+    return res.status(403).json({ success: false, message: 'Invalid token' });
   }
 };
 
-// Google OAuth client
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID || '634814462335-9o4t8q95c4orcsd9sijjl52374g6vm85.apps.googleusercontent.com');
+const requireAdmin = (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  next();
+};
 
 // Routes
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    success: true, 
-    message: 'Algracia POS API is running', 
-    timestamp: new Date().toISOString() 
-  });
-});
-
-// User registration
-app.post('/api/auth/signup', [
-  body('firstName').notEmpty().withMessage('First name is required'),
-  body('lastName').notEmpty().withMessage('Last name is required'),
-  body('email').isEmail().withMessage('Valid email is required'),
-  body('company').notEmpty().withMessage('Company name is required'),
-  body('position').notEmpty().withMessage('Position is required'),
-  body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters')
-], async (req, res) => {
+// Auth routes
+app.post('/api/auth/signup', async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Validation failed', 
-        errors: errors.array() 
-      });
-    }
-
     const { firstName, lastName, email, company, position, password } = req.body;
 
     // Check if user already exists
     const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(409).json({ 
-        success: false, 
-        message: 'User with this email already exists' 
-      });
+      return res.status(400).json({ success: false, message: 'User already exists' });
     }
 
     // Hash password
-    const saltRounds = 12;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Create new user (requires approval)
-    const newUser = new User({
+    // Create user
+    const user = new User({
       firstName,
       lastName,
       email,
       company,
       position,
       password: hashedPassword,
-      isApproved: false // Requires admin approval
+      status: 'pending'
     });
 
-    await newUser.save();
+    await user.save();
 
-    res.status(201).json({
-      success: true,
-      message: 'Account request submitted successfully. Please wait for administrator approval.',
+    // Log activity
+    const activity = new Activity({
+      action: 'User Signup',
+      details: `${firstName} ${lastName} from ${company} requested access`
+    });
+    await activity.save();
+
+    res.status(201).json({ 
+      success: true, 
+      message: 'Account request submitted for approval',
       requiresApproval: true
     });
-
   } catch (error) {
     console.error('Signup error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Internal server error during registration' 
-    });
+    res.status(500).json({ success: false, message: 'Server error during signup' });
   }
 });
 
-// User login
-app.post('/api/auth/login', [
-  body('email').isEmail().withMessage('Valid email is required'),
-  body('password').notEmpty().withMessage('Password is required')
-], async (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Validation failed', 
-        errors: errors.array() 
-      });
-    }
-
     const { email, password } = req.body;
 
-    // Find user by email
+    // Find user
     const user = await User.findOne({ email });
     if (!user) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid email or password' 
-      });
+      return res.status(400).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Check if account is approved
-    if (!user.isApproved) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Account pending approval. Please contact administrator.' 
-      });
+    // Check status
+    if (user.status !== 'approved') {
+      return res.status(400).json({ success: false, message: 'Account pending approval' });
     }
 
     // Check password
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid email or password' 
-      });
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Generate JWT token
-    const token = jwt.sign(
-      { userId: user._id, email: user.email }, 
-      JWT_SECRET, 
-      { expiresIn: '24h' }
-    );
+    // Generate token
+    const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: '24h' });
 
-    // Return user data (excluding password)
-    const userData = {
-      _id: user._id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      company: user.company,
-      position: user.position,
-      role: user.role,
-      initials: user.firstName[0] + user.lastName[0]
-    };
+    // Cache user data in Redis
+    await redisClient.setEx(`user:${user._id}`, 86400, JSON.stringify(user));
 
     res.json({
       success: true,
-      message: 'Login successful',
       token,
-      user: userData
+      user: {
+        _id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        company: user.company,
+        position: user.position,
+        role: user.role
+      }
     });
-
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Internal server error during login' 
-    });
+    res.status(500).json({ success: false, message: 'Server error during login' });
   }
 });
 
-// Google OAuth signup/login
-app.post('/api/auth/google-signup', async (req, res) => {
-  try {
-    const { credential } = req.body;
-    
-    if (!credential) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Google credential is required' 
-      });
-    }
-
-    const ticket = await googleClient.verifyIdToken({
-      idToken: credential,
-      audience: process.env.GOOGLE_CLIENT_ID
-    });
-
-    const payload = ticket.getPayload();
-    const { given_name, family_name, email, sub: googleId } = payload;
-
-    // Check if user already exists with this email
-    let user = await User.findOne({ email });
-
-    if (user) {
-      // User exists but might not have googleId
-      if (!user.googleId) {
-        user.googleId = googleId;
-        await user.save();
-      }
-      
-      // Check if account is approved
-      if (!user.isApproved) {
-        return res.json({
-          success: true,
-          requiresApproval: true,
-          message: 'Account request submitted. Please wait for administrator approval.'
-        });
-      }
-    } else {
-      // Create new user with Google auth (requires approval)
-      user = new User({
-        firstName: given_name,
-        lastName: family_name,
-        email,
-        googleId,
-        company: 'To be updated', // Request additional info
-        position: 'To be updated',
-        isApproved: false
-      });
-
-      await user.save();
-      
-      return res.json({
-        success: true,
-        requiresApproval: true,
-        message: 'Account request submitted. Please wait for administrator approval.'
-      });
-    }
-
-    // Generate JWT token for existing approved user
-    const token = jwt.sign(
-      { userId: user._id, email: user.email }, 
-      JWT_SECRET, 
-      { expiresIn: '24h' }
-    );
-
-    // Return user data
-    const userData = {
-      _id: user._id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      company: user.company,
-      position: user.position,
-      role: user.role,
-      initials: user.firstName[0] + user.lastName[0]
-    };
-
-    res.json({
-      success: true,
-      message: 'Google authentication successful',
-      token,
-      user: userData,
-      requiresApproval: false
-    });
-
-  } catch (error) {
-    console.error('Google auth error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Google authentication failed' 
-    });
-  }
-});
-
-// Token verification endpoint
 app.get('/api/auth/verify', authenticateToken, (req, res) => {
   res.json({
     success: true,
-    user: req.user
+    user: {
+      _id: req.user._id,
+      firstName: req.user.firstName,
+      lastName: req.user.lastName,
+      email: req.user.email,
+      company: req.user.company,
+      position: req.user.position,
+      role: req.user.role
+    }
   });
 });
 
-// Get all products
+// Product routes
 app.get('/api/products', authenticateToken, async (req, res) => {
   try {
-    // Try to get from Redis cache first
-    const cachedProducts = await redisClient.get('products');
+    const cacheKey = 'products:all';
+    const cachedProducts = await redisClient.get(cacheKey);
+    
     if (cachedProducts) {
-      return res.json({
-        success: true,
-        products: JSON.parse(cachedProducts)
-      });
+      return res.json(JSON.parse(cachedProducts));
     }
 
-    // If not in cache, get from database
-    const products = await Product.find({}).sort({ name: 1 });
+    const products = await Product.find({ stock: { $gt: 0 } });
     
-    // Cache products for 5 minutes
-    await redisClient.setEx('products', 300, JSON.stringify(products));
+    // Cache for 5 minutes
+    await redisClient.setEx(cacheKey, 300, JSON.stringify(products));
     
-    res.json({
-      success: true,
-      products
-    });
+    res.json(products);
   } catch (error) {
-    console.error('Get products error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to fetch products' 
-    });
+    console.error('Products error:', error);
+    res.status(500).json({ success: false, message: 'Server error fetching products' });
   }
 });
 
-// Get inventory
-app.get('/api/inventory', authenticateToken, async (req, res) => {
+app.post('/api/products', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const inventory = await Product.find({})
-      .select('name sku price stock category')
-      .sort({ name: 1 });
-    
-    res.json({
-      success: true,
-      inventory
-    });
-  } catch (error) {
-    console.error('Get inventory error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to fetch inventory' 
-    });
-  }
-});
+    const { name, sku, price, stock, category } = req.body;
 
-// Add new product
-app.post('/api/products', authenticateToken, [
-  body('name').notEmpty().withMessage('Product name is required'),
-  body('sku').notEmpty().withMessage('SKU is required'),
-  body('price').isNumeric().withMessage('Valid price is required'),
-  body('stock').isInt({ min: 0 }).withMessage('Valid stock quantity is required')
-], async (req, res) => {
-  try {
-    // Check if user has permission (admin or manager)
-    if (!['admin', 'manager'].includes(req.user.role)) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Insufficient permissions to add products' 
-      });
-    }
-
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Validation failed', 
-        errors: errors.array() 
-      });
-    }
-
-    const { name, sku, price, stock, category, description } = req.body;
-
-    // Check if product with SKU already exists
-    const existingProduct = await Product.findOne({ sku });
-    if (existingProduct) {
-      return res.status(409).json({ 
-        success: false, 
-        message: 'Product with this SKU already exists' 
-      });
-    }
-
-    const newProduct = new Product({
+    const product = new Product({
       name,
       sku,
       price,
       stock,
-      category: category || 'cosmetics',
-      description
+      category
     });
 
-    await newProduct.save();
-    
-    // Invalidate products cache
-    await redisClient.del('products');
-    
-    res.status(201).json({
-      success: true,
-      message: 'Product added successfully',
-      product: newProduct
-    });
+    await product.save();
 
+    // Invalidate cache
+    await redisClient.del('products:all');
+    await redisClient.del('dashboard:stats');
+
+    // Log activity
+    const activity = new Activity({
+      userId: req.user._id,
+      action: 'Product Added',
+      details: `Added product: ${name} (SKU: ${sku})`
+    });
+    await activity.save();
+
+    res.status(201).json({ success: true, product });
   } catch (error) {
     console.error('Add product error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to add product' 
-    });
+    res.status(500).json({ success: false, message: 'Server error adding product' });
   }
 });
 
-// Process payment and create transaction
+// Transaction routes
 app.post('/api/transactions', authenticateToken, async (req, res) => {
   try {
     const { paymentMethod, amount, cashReceived, change, cart } = req.body;
 
-    if (!paymentMethod || !amount || !cart || !cart.length) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Missing required transaction data' 
-      });
-    }
-
-    // Calculate totals
-    const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    const tax = subtotal * 0.16; // 16% VAT (Kenya)
-    const total = subtotal + tax;
-
-    // Prepare transaction items
-    const transactionItems = cart.map(item => ({
-      productId: item.productId,
-      name: item.name,
-      price: item.price,
-      quantity: item.quantity,
-      total: item.price * item.quantity
-    }));
-
-    // Create transaction record
     const transaction = new Transaction({
       userId: req.user._id,
-      items: transactionItems,
-      subtotal,
-      tax,
-      total,
+      items: cart,
+      total: amount,
       paymentMethod,
-      paymentDetails: {
-        cashReceived,
-        change
-      }
+      cashReceived,
+      change
     });
 
     await transaction.save();
-    
-    // Update product stock levels
+
+    // Update product stock
     for (const item of cart) {
       await Product.findByIdAndUpdate(
-        item.productId, 
+        item.productId,
         { $inc: { stock: -item.quantity } }
       );
     }
-    
-    // Invalidate dashboard cache
-    await redisClient.del(`dashboard_${req.user._id}`);
 
-    res.status(201).json({
-      success: true,
-      message: 'Transaction completed successfully',
-      transactionId: transaction._id
+    // Invalidate cache
+    await redisClient.del('dashboard:stats');
+    await redisClient.del('transactions:recent');
+
+    // Log activity
+    const activity = new Activity({
+      userId: req.user._id,
+      action: 'Transaction Completed',
+      details: `Transaction #${transaction._id} for $${amount} via ${paymentMethod}`
     });
+    await activity.save();
 
+    res.status(201).json({ 
+      success: true, 
+      transactionId: transaction._id 
+    });
   } catch (error) {
     console.error('Transaction error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to process transaction' 
-    });
+    res.status(500).json({ success: false, message: 'Server error processing transaction' });
   }
 });
 
-// M-Pesa payment processing
-app.post('/api/mpesa/payment', authenticateToken, async (req, res) => {
+// Admin routes
+app.get('/api/admin/dashboard', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { phoneNumber, amount, cart } = req.body;
-
-    if (!phoneNumber || !amount) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Phone number and amount are required' 
-      });
-    }
-
-    // In a real implementation, this would integrate with Safaricom M-Pesa API
-    // For demonstration, we'll simulate a successful payment
-
-    // Calculate totals
-    const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    const tax = subtotal * 0.16;
-    const total = subtotal + tax;
-
-    // Prepare transaction items
-    const transactionItems = cart.map(item => ({
-      productId: item.productId,
-      name: item.name,
-      price: item.price,
-      quantity: item.quantity,
-      total: item.price * item.quantity
-    }));
-
-    // Create transaction record
-    const transaction = new Transaction({
-      userId: req.user._id,
-      items: transactionItems,
-      subtotal,
-      tax,
-      total,
-      paymentMethod: 'mpesa',
-      paymentDetails: {
-        phoneNumber
-      }
-    });
-
-    await transaction.save();
+    const cacheKey = 'dashboard:stats';
+    const cachedStats = await redisClient.get(cacheKey);
     
-    // Update product stock levels
-    for (const item of cart) {
-      await Product.findByIdAndUpdate(
-        item.productId, 
-        { $inc: { stock: -item.quantity } }
-      );
+    if (cachedStats) {
+      return res.json(JSON.parse(cachedStats));
     }
+
+    const pendingApprovals = await User.countDocuments({ status: 'pending' });
+    const totalUsers = await User.countDocuments({ status: 'approved' });
     
-    // Invalidate dashboard cache
-    await redisClient.del(`dashboard_${req.user._id}`);
-
-    res.json({
-      success: true,
-      message: 'M-Pesa payment processed successfully',
-      transactionId: transaction._id
-    });
-
-  } catch (error) {
-    console.error('M-Pesa payment error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to process M-Pesa payment' 
-    });
-  }
-});
-
-// Card payment processing
-app.post('/api/card/payment', authenticateToken, async (req, res) => {
-  try {
-    const { cardNumber, expiryDate, cvv, amount, cart, cardType } = req.body;
-
-    if (!cardNumber || !expiryDate || !cvv) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Card details are required' 
-      });
-    }
-
-    // In a real implementation, this would integrate with a payment gateway like Stripe
-    // For demonstration, we'll simulate a successful payment
-
-    // Calculate totals
-    const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-    const tax = subtotal * 0.16;
-    const total = subtotal + tax;
-
-    // Prepare transaction items
-    const transactionItems = cart.map(item => ({
-      productId: item.productId,
-      name: item.name,
-      price: item.price,
-      quantity: item.quantity,
-      total: item.price * item.quantity
-    }));
-
-    // Create transaction record
-    const transaction = new Transaction({
-      userId: req.user._id,
-      items: transactionItems,
-      subtotal,
-      tax,
-      total,
-      paymentMethod: cardType === 'visa' ? 'card_visa' : 'card_mastercard',
-      paymentDetails: {
-        cardLast4: cardNumber.slice(-4)
-      }
-    });
-
-    await transaction.save();
-    
-    // Update product stock levels
-    for (const item of cart) {
-      await Product.findByIdAndUpdate(
-        item.productId, 
-        { $inc: { stock: -item.quantity } }
-      );
-    }
-    
-    // Invalidate dashboard cache
-    await redisClient.del(`dashboard_${req.user._id}`);
-
-    res.json({
-      success: true,
-      message: 'Card payment processed successfully',
-      transactionId: transaction._id
-    });
-
-  } catch (error) {
-    console.error('Card payment error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to process card payment' 
-    });
-  }
-});
-
-// Get dashboard data
-app.get('/api/dashboard', authenticateToken, async (req, res) => {
-  try {
-    // Try to get from Redis cache first
-    const cachedDashboard = await redisClient.get(`dashboard_${req.user._id}`);
-    if (cachedDashboard) {
-      return res.json(JSON.parse(cachedDashboard));
-    }
-
-    // Get today's date range
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    const todaySales = await Transaction.aggregate([
+      { $match: { timestamp: { $gte: today } } },
+      { $group: { _id: null, total: { $sum: '$total' } } }
+    ]);
+    
+    const lowStockItems = await Product.countDocuments({ stock: { $lt: 10, $gt: 0 } });
 
-    // Get today's transactions
-    const todayTransactions = await Transaction.find({
-      userId: req.user._id,
-      timestamp: { $gte: today, $lt: tomorrow }
-    });
-
-    // Calculate today's sales
-    const todaySales = todayTransactions.reduce((sum, transaction) => sum + transaction.total, 0);
-
-    // Get inventory stats
-    const totalProducts = await Product.countDocuments();
-    const lowStockProducts = await Product.countDocuments({ stock: { $lt: 10 } });
-
-    // Get recent transactions (last 10)
-    const recentTransactions = await Transaction.find({ userId: req.user._id })
-      .sort({ timestamp: -1 })
-      .limit(10)
-      .select('_id timestamp total paymentMethod');
-
-    const dashboardData = {
-      success: true,
-      todaySales,
-      todayTransactions: todayTransactions.length,
-      totalProducts,
-      lowStockItems: lowStockProducts,
-      recentTransactions
+    const stats = {
+      pendingApprovals,
+      totalUsers,
+      todaySales: todaySales.length > 0 ? todaySales[0].total : 0,
+      lowStockItems
     };
 
-    // Cache dashboard data for 5 minutes
-    await redisClient.setEx(
-      `dashboard_${req.user._id}`, 
-      300, 
-      JSON.stringify(dashboardData)
-    );
+    // Cache for 5 minutes
+    await redisClient.setEx(cacheKey, 300, JSON.stringify(stats));
 
-    res.json(dashboardData);
-
+    res.json(stats);
   } catch (error) {
     console.error('Dashboard error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to load dashboard data' 
-    });
+    res.status(500).json({ success: false, message: 'Server error fetching dashboard data' });
   }
 });
 
-// Logout endpoint (blacklist token)
-app.post('/api/auth/logout', authenticateToken, async (req, res) => {
+app.get('/api/admin/pending-approvals', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
+    const users = await User.find({ status: 'pending' }).select('-password');
+    res.json(users);
+  } catch (error) {
+    console.error('Pending approvals error:', error);
+    res.status(500).json({ success: false, message: 'Server error fetching pending approvals' });
+  }
+});
+
+app.post('/api/admin/approve-user/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.params.userId,
+      { status: 'approved' },
+      { new: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Invalidate cache
+    await redisClient.del('dashboard:stats');
+
+    // Log activity
+    const activity = new Activity({
+      userId: req.user._id,
+      action: 'User Approved',
+      details: `Approved user: ${user.firstName} ${user.lastName} (${user.email})`
+    });
+    await activity.save();
+
+    res.json({ success: true, user });
+  } catch (error) {
+    console.error('Approve user error:', error);
+    res.status(500).json({ success: false, message: 'Server error approving user' });
+  }
+});
+
+app.post('/api/admin/reject-user/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.params.userId,
+      { status: 'rejected' },
+      { new: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Invalidate cache
+    await redisClient.del('dashboard:stats');
+
+    // Log activity
+    const activity = new Activity({
+      userId: req.user._id,
+      action: 'User Rejected',
+      details: `Rejected user: ${user.firstName} ${user.lastName} (${user.email})`
+    });
+    await activity.save();
+
+    res.json({ success: true, user });
+  } catch (error) {
+    console.error('Reject user error:', error);
+    res.status(500).json({ success: false, message: 'Server error rejecting user' });
+  }
+});
+
+app.get('/api/admin/users/active', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const users = await User.find({ status: 'approved' }).select('-password');
+    res.json(users);
+  } catch (error) {
+    console.error('Active users error:', error);
+    res.status(500).json({ success: false, message: 'Server error fetching active users' });
+  }
+});
+
+app.get('/api/admin/users/inactive', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const users = await User.find({ status: 'inactive' }).select('-password');
+    res.json(users);
+  } catch (error) {
+    console.error('Inactive users error:', error);
+    res.status(500).json({ success: false, message: 'Server error fetching inactive users' });
+  }
+});
+
+app.post('/api/admin/users/:userId/deactivate', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.params.userId,
+      { status: 'inactive' },
+      { new: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Log activity
+    const activity = new Activity({
+      userId: req.user._id,
+      action: 'User Deactivated',
+      details: `Deactivated user: ${user.firstName} ${user.lastName} (${user.email})`
+    });
+    await activity.save();
+
+    res.json({ success: true, user });
+  } catch (error) {
+    console.error('Deactivate user error:', error);
+    res.status(500).json({ success: false, message: 'Server error deactivating user' });
+  }
+});
+
+app.post('/api/admin/users/:userId/activate', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.params.userId,
+      { status: 'approved' },
+      { new: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Log activity
+    const activity = new Activity({
+      userId: req.user._id,
+      action: 'User Activated',
+      details: `Activated user: ${user.firstName} ${user.lastName} (${user.email})`
+    });
+    await activity.save();
+
+    res.json({ success: true, user });
+  } catch (error) {
+    console.error('Activate user error:', error);
+    res.status(500).json({ success: false, message: 'Server error activating user' });
+  }
+});
+
+app.delete('/api/admin/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findByIdAndDelete(req.params.userId);
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Invalidate cache
+    await redisClient.del('dashboard:stats');
+
+    // Log activity
+    const activity = new Activity({
+      userId: req.user._id,
+      action: 'User Deleted',
+      details: `Deleted user: ${user.firstName} ${user.lastName} (${user.email})`
+    });
+    await activity.save();
+
+    res.json({ success: true, message: 'User deleted successfully' });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ success: false, message: 'Server error deleting user' });
+  }
+});
+
+app.get('/api/admin/inventory', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const inventory = await Product.find().sort({ name: 1 });
+    res.json(inventory);
+  } catch (error) {
+    console.error('Inventory error:', error);
+    res.status(500).json({ success: false, message: 'Server error fetching inventory' });
+  }
+});
+
+app.delete('/api/admin/inventory/:productId', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const product = await Product.findByIdAndDelete(req.params.productId);
+
+    if (!product) {
+      return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    // Invalidate cache
+    await redisClient.del('products:all');
+    await redisClient.del('dashboard:stats');
+
+    // Log activity
+    const activity = new Activity({
+      userId: req.user._id,
+      action: 'Product Deleted',
+      details: `Deleted product: ${product.name} (SKU: ${product.sku})`
+    });
+    await activity.save();
+
+    res.json({ success: true, message: 'Product deleted successfully' });
+  } catch (error) {
+    console.error('Delete product error:', error);
+    res.status(500).json({ success: false, message: 'Server error deleting product' });
+  }
+});
+
+app.get('/api/admin/transactions', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { date } = req.query;
+    let query = {};
     
-    // Add token to blacklist with expiration time (24 hours)
-    const decoded = jwt.decode(token);
-    const expiresIn = decoded.exp - Math.floor(Date.now() / 1000);
-    
-    if (expiresIn > 0) {
-      await redisClient.setEx(`blacklist_${token}`, expiresIn, 'true');
+    if (date) {
+      const startDate = new Date(date);
+      const endDate = new Date(date);
+      endDate.setDate(endDate.getDate() + 1);
+      
+      query.timestamp = { $gte: startDate, $lt: endDate };
     }
     
-    res.json({ 
-      success: true, 
-      message: 'Logged out successfully' 
-    });
+    const transactions = await Transaction.find(query)
+      .populate('userId', 'firstName lastName')
+      .sort({ timestamp: -1 })
+      .limit(50);
+    
+    res.json(transactions);
   } catch (error) {
-    console.error('Logout error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to logout' 
-    });
+    console.error('Transactions error:', error);
+    res.status(500).json({ success: false, message: 'Server error fetching transactions' });
   }
 });
 
-// Error handling middleware
-app.use((error, req, res, next) => {
-  console.error('Unhandled error:', error);
-  res.status(500).json({ 
-    success: false, 
-    message: 'Internal server error' 
-  });
+app.get('/api/admin/activities', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const activities = await Activity.find()
+      .populate('userId', 'firstName lastName')
+      .sort({ timestamp: -1 })
+      .limit(20);
+    
+    res.json(activities);
+  } catch (error) {
+    console.error('Activities error:', error);
+    res.status(500).json({ success: false, message: 'Server error fetching activities' });
+  }
 });
 
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({ 
-    success: false, 
-    message: 'API endpoint not found' 
-  });
+app.get('/api/admin/reports', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { type } = req.query;
+    let groupBy = {};
+    let match = {};
+    
+    // Set date range based on report type
+    const now = new Date();
+    if (type === 'daily') {
+      const startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - 7);
+      
+      match.timestamp = { $gte: startDate };
+      groupBy = {
+        year: { $year: '$timestamp' },
+        month: { $month: '$timestamp' },
+        day: { $dayOfMonth: '$timestamp' }
+      };
+    } else if (type === 'weekly') {
+      const startDate = new Date(now);
+      startDate.setDate(startDate.getDate() - 30);
+      
+      match.timestamp = { $gte: startDate };
+      groupBy = {
+        year: { $year: '$timestamp' },
+        week: { $week: '$timestamp' }
+      };
+    } else if (type === 'monthly') {
+      const startDate = new Date(now);
+      startDate.setFullYear(startDate.getFullYear() - 1);
+      
+      match.timestamp = { $gte: startDate };
+      groupBy = {
+        year: { $year: '$timestamp' },
+        month: { $month: '$timestamp' }
+      };
+    }
+    
+    const reportData = await Transaction.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: groupBy,
+          totalSales: { $sum: '$total' },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1, '_id.week': 1, '_id.day': 1 } }
+    ]);
+    
+    // Format data for chart
+    const labels = [];
+    const data = [];
+    
+    reportData.forEach(item => {
+      if (type === 'daily') {
+        labels.push(`${item._id.month}/${item._id.day}/${item._id.year}`);
+      } else if (type === 'weekly') {
+        labels.push(`Week ${item._id.week}, ${item._id.year}`);
+      } else if (type === 'monthly') {
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        labels.push(`${monthNames[item._id.month - 1]} ${item._id.year}`);
+      }
+      
+      data.push(item.totalSales);
+    });
+    
+    res.json({ labels, data });
+  } catch (error) {
+    console.error('Reports error:', error);
+    res.status(500).json({ success: false, message: 'Server error generating report' });
+  }
 });
+
+app.post('/api/admin/settings', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const { companyName, currency, taxRate, receiptFooter } = req.body;
+    
+    let settings = await Setting.findOne();
+    if (!settings) {
+      settings = new Setting();
+    }
+    
+    settings.companyName = companyName || settings.companyName;
+    settings.currency = currency || settings.currency;
+    settings.taxRate = taxRate || settings.taxRate;
+    settings.receiptFooter = receiptFooter || settings.receiptFooter;
+    
+    await settings.save();
+    
+    // Log activity
+    const activity = new Activity({
+      userId: req.user._id,
+      action: 'Settings Updated',
+      details: 'System settings were updated'
+    });
+    await activity.save();
+    
+    res.json({ success: true, settings });
+  } catch (error) {
+    console.error('Settings error:', error);
+    res.status(500).json({ success: false, message: 'Server error saving settings' });
+  }
+});
+
+// Initialize settings if not exists
+async function initializeSettings() {
+  const settings = await Setting.findOne();
+  if (!settings) {
+    const defaultSettings = new Setting();
+    await defaultSettings.save();
+    console.log('Default settings initialized');
+  }
+}
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Algracia POS backend server running on port ${PORT}`);
-});
-
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('Shutting down gracefully...');
-  await redisClient.quit();
-  await mongoose.connection.close();
-  process.exit(0);
+  console.log(`Server running on port ${PORT}`);
+  initializeSettings();
 });
