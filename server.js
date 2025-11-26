@@ -13,7 +13,9 @@ require('dotenv').config();
 
 const app = express();
 
-// Security Middleware
+// ======================
+// CORS Configuration
+// ======================
 app.use(cors({
   origin: [
     'https://citation-training-academy-1b8h.vercel.app',
@@ -26,11 +28,17 @@ app.use(cors({
 }));
 
 app.options('*', cors());
+
+// ======================
+// Security Middleware
+// ======================
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
+// ======================
 // Rate Limiting
+// ======================
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 1000,
@@ -41,15 +49,21 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// ======================
 // Body Parsing Middleware
+// ======================
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// ======================
 // JWT Configuration
+// ======================
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
 
+// ======================
 // MongoDB Connection
+// ======================
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://elvismwangike:JFJmHvP4ktikRYDC@cluster0.vm6hrog.mongodb.net/bithash?retryWrites=true&w=majority&appName=Cluster0';
 
 mongoose.connect(MONGODB_URI, {
@@ -62,7 +76,9 @@ mongoose.connect(MONGODB_URI, {
   process.exit(1);
 });
 
+// ======================
 // Email Configuration
+// ======================
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_HOST || 'smtp.gmail.com',
   port: process.env.EMAIL_PORT || 587,
@@ -84,7 +100,10 @@ transporter.verify(function(error, success) {
   }
 });
 
+// ======================
 // Database Schemas
+// ======================
+
 const adminUserSchema = new mongoose.Schema({
   username: {
     type: String,
@@ -197,11 +216,6 @@ const emailTemplateSchema = new mongoose.Schema({
     default: 'general',
     enum: ['general', 'promotional', 'update', 'alert']
   },
-  templateType: {
-    type: String,
-    default: 'custom',
-    enum: ['custom', 'bithash_sales', 'transaction_contest']
-  },
   isActive: {
     type: Boolean,
     default: true
@@ -296,14 +310,18 @@ const trackingPixelSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// ======================
 // Models
+// ======================
 const AdminUser = mongoose.model('AdminUser', adminUserSchema);
 const Investor = mongoose.model('Investor', investorSchema);
 const EmailTemplate = mongoose.model('EmailTemplate', emailTemplateSchema);
 const EmailCampaign = mongoose.model('EmailCampaign', emailCampaignSchema);
 const TrackingPixel = mongoose.model('TrackingPixel', trackingPixelSchema);
 
+// ======================
 // Authentication Middleware
+// ======================
 const authenticateToken = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -336,7 +354,9 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// Email Template Generation Functions
+// ======================
+// Email Template Functions
+// ======================
 const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
   const logoUrl = 'https://www.dropbox.com/scl/fi/1dq16nex1borvvknpcwox/circular_dark_background.png?rlkey=sq2ujl2oxxk9vyvg1j7oz0cdb&raw=1';
   
@@ -539,73 +559,101 @@ const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
   `;
 };
 
-// Predefined Templates
-const PREDEFINED_TEMPLATES = {
-  bithash_sales: {
-    name: 'BitHash Sales Template',
+// Pre-defined email templates
+const PREDEFINED_TEMPLATES = [
+  {
+    name: 'BitHash Capital Investment Pitch',
     subject: 'Join BitHash Capital - Earn Returns on Your Crypto Investments',
     content: `
-      <h2>Don't Let Your Crypto Sit Idle - Start Earning Today!</h2>
-      <p>At BitHash Capital, we transform your dormant cryptocurrency into active, income-generating assets. Instead of letting your Bitcoin and other cryptocurrencies sit idle in your wallet, put them to work with our proven investment platform.</p>
+      <h2 style="color: #f7931a; margin-bottom: 20px;">Unlock the Power of Bitcoin Mining with BitHash Capital</h2>
       
-      <h3>Why Choose BitHash Capital?</h3>
-      <ul>
-        <li><strong>Earn Substantial Returns:</strong> Generate consistent returns on your crypto investments through our professional Bitcoin mining operations</li>
-        <li><strong>Bitcoin-Backed Loans:</strong> Access low-interest loans using your Bitcoin as collateral while continuing to earn returns</li>
-        <li><strong>50% Deposit Bonus:</strong> Enjoy a special 50% bonus on your first deposit to kickstart your investment journey</li>
-        <li><strong>Professional Management:</strong> Our team of experts manages the complex mining infrastructure so you don't have to</li>
-      </ul>
+      <p>Dear Investor,</p>
       
-      <h3>Get Started Today</h3>
-      <p>Join thousands of satisfied investors who are already earning returns on their cryptocurrency investments. With BitHash Capital, your crypto works for you 24/7.</p>
+      <p>Instead of letting your cryptocurrency sit idle in your wallet, why not put it to work with BitHash Capital? We offer a unique opportunity to earn substantial returns through our professional Bitcoin mining operations.</p>
       
-      <div style="text-align: center; margin: 25px 0;">
-        <a href="https://bithashcapital.com/signup" style="background: #f7931a; color: #0a0a0a; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Start Earning Now</a>
+      <div style="background: rgba(247, 147, 26, 0.1); padding: 15px; border-radius: 6px; margin: 20px 0;">
+        <h3 style="color: #f7931a; margin-bottom: 10px;">Why Choose BitHash Capital?</h3>
+        <ul style="margin: 10px 0; padding-left: 20px;">
+          <li><strong>Professional Mining Infrastructure:</strong> State-of-the-art ASIC miners with 99.1% uptime</li>
+          <li><strong>Daily Returns:</strong> Earn consistent returns on your investment</li>
+          <li><strong>Low-Interest Bitcoin Loans:</strong> Borrow against your holdings at competitive rates</li>
+          <li><strong>50% Deposit Bonus:</strong> Get 50% bonus on your first deposit</li>
+          <li><strong>24/7 Monitoring:</strong> Professional team ensuring optimal performance</li>
+        </ul>
       </div>
       
-      <p><strong>Limited Time Offer:</strong> The 50% first deposit bonus is available for a limited time only. Don't miss this opportunity to maximize your initial investment!</p>
+      <p>Our mining facilities are strategically located across North America, Europe, and Asia, utilizing renewable energy sources for sustainable operations.</p>
+      
+      <div style="text-align: center; margin: 25px 0;">
+        <div style="display: inline-block; background: linear-gradient(135deg, #f7931a 0%, #e68517 100%); color: #0a0a0a; padding: 12px 30px; border-radius: 6px; font-weight: 600; text-decoration: none;">
+          Start Earning Today - Get Your 50% Bonus!
+        </div>
+      </div>
+      
+      <p>Join thousands of satisfied investors who are already benefiting from our mining expertise. Your crypto shouldn't just sit there - let it work for you!</p>
+      
+      <p><strong>Limited Time Offer:</strong> The 50% deposit bonus is available for new investors only. Don't miss this opportunity to maximize your returns.</p>
+      
+      <p>Best regards,<br>
+      The BitHash Capital Team</p>
     `,
-    category: 'promotional',
-    templateType: 'bithash_sales'
+    category: 'promotional'
   },
-  transaction_contest: {
-    name: 'Transaction Contest Template',
+  {
+    name: 'Hourly Bitcoin Giveaway',
     subject: 'Win 0.0056 BTC Every Hour - Be the First to Transact!',
     content: `
-      <h2>🚀 Exciting News: Hourly Bitcoin Giveaway! 🚀</h2>
-      <p>We're thrilled to announce our exclusive hourly transaction contest where you can win <strong>0.0056 BTC</strong> every single hour!</p>
+      <h2 style="color: #f7931a; margin-bottom: 20px;">🚀 Win 0.0056 BTC Every Hour! 🚀</h2>
       
-      <h3>How to Win:</h3>
-      <ul>
-        <li><strong>Be the First:</strong> The first user to complete any transaction during each hour wins</li>
-        <li><strong>Any Transaction Counts:</strong> Deposits, investments, withdrawals - all transactions qualify</li>
-        <li><strong>Hourly Winners:</strong> New winner every hour, 24 times a day</li>
-        <li><strong>Instant Rewards:</strong> 0.0056 BTC credited directly to your account immediately</li>
-      </ul>
+      <p>Dear Valued Investor,</p>
       
-      <h3>Contest Details:</h3>
-      <div style="background: rgba(247, 147, 26, 0.1); padding: 15px; border-radius: 6px; border-left: 4px solid #f7931a;">
-        <p><strong>Prize:</strong> 0.0056 BTC per hour (approximately $200+)</p>
-        <p><strong>Frequency:</strong> Every hour, on the hour</p>
-        <p><strong>Eligibility:</strong> All verified BitHash Capital users</p>
-        <p><strong>Transaction Types:</strong> Any platform transaction qualifies</p>
+      <p>We're excited to announce our exclusive hourly Bitcoin giveaway! Every hour, one lucky investor stands to win 0.0056 BTC simply by being the first to complete a transaction during that hour.</p>
+      
+      <div style="background: rgba(247, 147, 26, 0.1); padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center;">
+        <h3 style="color: #f7931a; margin-bottom: 15px;">💰 Hourly Prize: 0.0056 BTC 💰</h3>
+        <p style="font-size: 18px; font-weight: 600; margin: 10px 0;">That's approximately $200+ every hour!</p>
       </div>
       
-      <h3>Pro Tip:</h3>
-      <p>Set reminders for the start of each hour and be ready to make your transaction. The early bird gets the Bitcoin!</p>
+      <h3 style="color: #f7931a; margin: 25px 0 15px 0;">How to Win:</h3>
+      <ol style="margin: 15px 0; padding-left: 20px;">
+        <li><strong>Be Quick:</strong> Make any transaction (deposit, investment, or trade)</li>
+        <li><strong>Be First:</strong> Become the first transaction of the hour</li>
+        <li><strong>Win Automatically:</strong> 0.0056 BTC credited instantly to your account</li>
+      </ol>
       
-      <div style="text-align: center; margin: 25px 0;">
-        <a href="https://bithashcapital.com/dashboard" style="background: #f7931a; color: #0a0a0a; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Make Your Transaction Now</a>
+      <div style="background: rgba(255, 215, 0, 0.1); border-left: 4px solid #ffd700; padding: 15px; margin: 20px 0;">
+        <h4 style="color: #ffd700; margin-bottom: 10px;">🎯 Pro Tip:</h4>
+        <p>Set reminders for the start of each hour and be ready to make your transaction. The more you participate, the higher your chances of winning!</p>
       </div>
       
-      <p><em>Multiple entries allowed! You can win multiple times throughout the day. Good luck!</em></p>
+      <p><strong>Multiple Wins Possible:</strong> You can win multiple times throughout the day. Every hour is a new opportunity!</p>
+      
+      <div style="text-align: center; margin: 30px 0;">
+        <div style="display: inline-block; background: linear-gradient(135deg, #ffd700 0%, #d4af37 100%); color: #0a0a0a; padding: 12px 30px; border-radius: 6px; font-weight: 600; text-decoration: none;">
+          Start Transacting Now - Win Big!
+        </div>
+      </div>
+      
+      <p>Don't let this golden opportunity pass you by. With 24 chances to win every day, your next transaction could make you our next hourly winner!</p>
+      
+      <p>Good luck and happy trading!</p>
+      
+      <p>Best regards,<br>
+      The BitHash Capital Team</p>
+      
+      <p style="font-size: 12px; color: #a0aec0; margin-top: 20px;">
+        *Terms and conditions apply. Transaction must be completed and confirmed on the blockchain to be eligible. Winner is determined by the first confirmed transaction timestamp each hour.
+      </p>
     `,
-    category: 'promotional',
-    templateType: 'transaction_contest'
+    category: 'promotional'
   }
-};
+];
 
+// ======================
 // API Routes
+// ======================
+
+// Health Check
 app.get('/health', (req, res) => {
   res.json({
     status: 'success',
@@ -697,7 +745,11 @@ app.get('/admin/stats', authenticateToken, async (req, res) => {
         totalInvestors,
         emailsSent,
         openRate: parseFloat(openRate),
-        lastActivity: new Date().toISOString()
+        lastActivity: new Date().toISOString(),
+        investorTrend: 2.5,
+        emailTrend: 1.8,
+        openTrend: -0.5,
+        activityTime: 'Just now'
       }
     });
 
@@ -741,10 +793,31 @@ app.get('/admin/investors', authenticateToken, async (req, res) => {
     const totalCount = await Investor.countDocuments(query);
     const totalPages = Math.ceil(totalCount / limit);
 
+    const investorsWithStatus = await Promise.all(
+      investors.map(async (investor) => {
+        const lastCampaign = await EmailCampaign.findOne({
+          'recipients.investorId': investor._id
+        }).sort({ sentAt: -1 });
+
+        let lastEmailStatus = 'none';
+        if (lastCampaign) {
+          const recipient = lastCampaign.recipients.find(
+            r => r.investorId && r.investorId.toString() === investor._id.toString()
+          );
+          lastEmailStatus = recipient ? recipient.status : 'none';
+        }
+
+        return {
+          ...investor.toObject(),
+          lastEmailStatus
+        };
+      })
+    );
+
     res.json({
       status: 'success',
       data: {
-        investors,
+        investors: investorsWithStatus,
         totalCount,
         totalPages,
         currentPage: page
@@ -756,58 +829,6 @@ app.get('/admin/investors', authenticateToken, async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to load investors'
-    });
-  }
-});
-
-// Add Single Investor
-app.post('/admin/investors', authenticateToken, async (req, res) => {
-  try {
-    const { email, name, phone, country } = req.body;
-
-    if (!email || !name) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Email and name are required'
-      });
-    }
-
-    if (!validator.isEmail(email)) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Please provide a valid email address'
-      });
-    }
-
-    const existingInvestor = await Investor.findOne({ email });
-    if (existingInvestor) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Investor with this email already exists'
-      });
-    }
-
-    const investor = new Investor({
-      email,
-      name,
-      phone,
-      country,
-      status: 'new'
-    });
-
-    await investor.save();
-
-    res.json({
-      status: 'success',
-      message: 'Investor added successfully',
-      data: { investor }
-    });
-
-  } catch (error) {
-    console.error('Add investor error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to add investor'
     });
   }
 });
@@ -824,7 +845,7 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
       scheduleDate = null,
       saveAsTemplate = false,
       templateName = null,
-      templateType = 'custom'
+      templateId = null
     } = req.body;
 
     if (!subject || !content) {
@@ -864,7 +885,8 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
       sentBy: req.user._id,
       enableTracking,
       status: scheduleEmail ? 'scheduled' : 'sent',
-      scheduledFor: scheduleEmail ? new Date(scheduleDate) : null
+      scheduledFor: scheduleEmail ? new Date(scheduleDate) : null,
+      templateId: templateId || null
     });
 
     await campaign.save();
@@ -874,8 +896,7 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
         name: templateName,
         subject,
         content,
-        category: 'promotional',
-        templateType: templateType
+        category: 'general'
       });
       await template.save();
     }
@@ -899,101 +920,6 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to send email campaign'
-    });
-  }
-});
-
-// Send to Manual Email Address
-app.post('/admin/send-manual-email', authenticateToken, async (req, res) => {
-  try {
-    const {
-      emailAddresses,
-      subject,
-      content,
-      enableTracking = true
-    } = req.body;
-
-    if (!emailAddresses || !subject || !content) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Email addresses, subject, and content are required'
-      });
-    }
-
-    const emails = Array.isArray(emailAddresses) ? emailAddresses : [emailAddresses];
-    
-    // Validate email addresses
-    const validEmails = emails.filter(email => validator.isEmail(email));
-    if (validEmails.length === 0) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'No valid email addresses provided'
-      });
-    }
-
-    const campaign = new EmailCampaign({
-      subject,
-      content,
-      recipients: validEmails.map(email => ({
-        email: email,
-        name: 'Manual Recipient',
-        status: 'sent'
-      })),
-      sentBy: req.user._id,
-      enableTracking,
-      status: 'sent'
-    });
-
-    await campaign.save();
-
-    // Send emails
-    for (const email of validEmails) {
-      try {
-        let trackingPixel = null;
-        if (enableTracking) {
-          const recipient = campaign.recipients.find(r => r.email === email);
-          if (recipient) {
-            trackingPixel = `${process.env.API_BASE_URL || 'https://tiktok-com-shop.onrender.com'}/track/${campaign._id}/${recipient._id}`;
-          }
-        }
-
-        const emailHtml = generateBitcoinMiningEmailTemplate(content, trackingPixel);
-
-        const mailOptions = {
-          from: {
-            name: 'BitHash Capital',
-            address: process.env.EMAIL_FROM || 'noreply@bithashcapital.com'
-          },
-          to: email,
-          subject: subject,
-          html: emailHtml
-        };
-
-        await transporter.sendMail(mailOptions);
-
-      } catch (emailError) {
-        console.error(`Failed to send email to ${email}:`, emailError);
-      }
-    }
-
-    campaign.status = 'sent';
-    campaign.sentAt = new Date();
-    await campaign.save();
-
-    res.json({
-      status: 'success',
-      message: `Email sent to ${validEmails.length} address(es) successfully`,
-      data: {
-        campaignId: campaign._id,
-        recipientCount: validEmails.length
-      }
-    });
-
-  } catch (error) {
-    console.error('Send manual email error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to send manual email'
     });
   }
 });
@@ -1077,7 +1003,8 @@ app.get('/admin/templates', authenticateToken, async (req, res) => {
     const templates = await EmailTemplate.find(query)
       .sort({ updatedAt: -1 })
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .select('-content');
 
     const totalCount = await EmailTemplate.countDocuments(query);
     const totalPages = Math.ceil(totalCount / limit);
@@ -1101,31 +1028,37 @@ app.get('/admin/templates', authenticateToken, async (req, res) => {
   }
 });
 
-// Get Predefined Templates
-app.get('/admin/templates/predefined', authenticateToken, async (req, res) => {
+// Get template by ID
+app.get('/admin/templates/:id', authenticateToken, async (req, res) => {
   try {
-    const predefinedTemplates = Object.values(PREDEFINED_TEMPLATES);
-    
+    const { id } = req.params;
+
+    const template = await EmailTemplate.findById(id);
+    if (!template) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Template not found'
+      });
+    }
+
     res.json({
       status: 'success',
-      data: {
-        templates: predefinedTemplates
-      }
+      data: { template }
     });
 
   } catch (error) {
-    console.error('Predefined templates error:', error);
+    console.error('Get template error:', error);
     res.status(500).json({
       status: 'error',
-      message: 'Failed to load predefined templates'
+      message: 'Failed to load template'
     });
   }
 });
 
-// Create Template
+// Create template
 app.post('/admin/templates', authenticateToken, async (req, res) => {
   try {
-    const { name, subject, content, category = 'general', templateType = 'custom' } = req.body;
+    const { name, subject, content, category = 'general' } = req.body;
 
     if (!name || !subject || !content) {
       return res.status(400).json({
@@ -1138,8 +1071,7 @@ app.post('/admin/templates', authenticateToken, async (req, res) => {
       name,
       subject,
       content,
-      category,
-      templateType
+      category
     });
 
     await template.save();
@@ -1159,7 +1091,7 @@ app.post('/admin/templates', authenticateToken, async (req, res) => {
   }
 });
 
-// Update Template
+// Update template
 app.put('/admin/templates/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1193,7 +1125,7 @@ app.put('/admin/templates/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Delete Template
+// Delete template
 app.delete('/admin/templates/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1221,6 +1153,24 @@ app.delete('/admin/templates/:id', authenticateToken, async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to delete template'
+    });
+  }
+});
+
+// Get predefined templates
+app.get('/admin/predefined-templates', authenticateToken, async (req, res) => {
+  try {
+    res.json({
+      status: 'success',
+      data: {
+        templates: PREDEFINED_TEMPLATES
+      }
+    });
+  } catch (error) {
+    console.error('Predefined templates error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to load predefined templates'
     });
   }
 });
@@ -1257,7 +1207,11 @@ app.get('/admin/analytics', authenticateToken, async (req, res) => {
         deliveryRate: parseFloat(deliveryRate),
         openRate: parseFloat(openRate),
         clickRate: 0,
-        unsubscribeRate: 0
+        unsubscribeRate: 0,
+        deliveryTrend: 0.2,
+        openTrend: -0.3,
+        clickTrend: 0.1,
+        unsubscribeTrend: -0.1
       }
     });
 
@@ -1383,7 +1337,9 @@ app.get('/admin/export/emails', authenticateToken, async (req, res) => {
   }
 });
 
+// ======================
 // Helper Functions
+// ======================
 async function sendEmailCampaign(campaign) {
   try {
     const recipients = campaign.recipients;
@@ -1457,8 +1413,10 @@ async function sendEmailCampaign(campaign) {
   }
 }
 
+// ======================
 // Initialize Default Admin and Templates
-async function initializeDefaultData() {
+// ======================
+async function initializeDefaultAdmin() {
   try {
     const adminCount = await AdminUser.countDocuments();
     if (adminCount === 0) {
@@ -1470,24 +1428,33 @@ async function initializeDefaultData() {
       });
       await defaultAdmin.save();
       console.log('✅ Default admin user created: admin / admin123');
+    } else {
+      console.log('✅ Admin user already exists');
     }
+  } catch (error) {
+    console.error('❌ Error creating default admin:', error);
+  }
+}
 
-    // Initialize predefined templates if they don't exist
-    for (const [key, templateData] of Object.entries(PREDEFINED_TEMPLATES)) {
-      const existingTemplate = await EmailTemplate.findOne({ templateType: key });
+async function initializePredefinedTemplates() {
+  try {
+    for (const templateData of PREDEFINED_TEMPLATES) {
+      const existingTemplate = await EmailTemplate.findOne({ name: templateData.name });
       if (!existingTemplate) {
         const template = new EmailTemplate(templateData);
         await template.save();
         console.log(`✅ Predefined template created: ${templateData.name}`);
       }
     }
-
+    console.log('✅ All predefined templates initialized');
   } catch (error) {
-    console.error('❌ Error initializing default data:', error);
+    console.error('❌ Error creating predefined templates:', error);
   }
 }
 
+// ======================
 // Error Handling
+// ======================
 app.use((error, req, res, next) => {
   console.error('💥 Unhandled error:', error);
   res.status(500).json({
@@ -1504,7 +1471,9 @@ app.use('*', (req, res) => {
   });
 });
 
+// ======================
 // Server Startup
+// ======================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, async () => {
@@ -1512,7 +1481,8 @@ app.listen(PORT, async () => {
   console.log(`📍 Port: ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
   
-  await initializeDefaultData();
+  await initializeDefaultAdmin();
+  await initializePredefinedTemplates();
   
   console.log('✅ BitHash Capital Admin Server running successfully!');
   console.log('✅ All systems operational');
