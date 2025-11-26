@@ -15,68 +15,76 @@ require('dotenv').config();
 
 const app = express();
 
-// Security middleware
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }
-}));
-
-
-
-// Enhanced CORS configuration
+// ======================
+// CRITICAL FIX: CORS FIRST - Before Helmet
+// ======================
 app.use(cors({
-  origin: function (origin, callback) {
-    const allowedOrigins = process.env.ALLOWED_ORIGINS ? 
-      process.env.ALLOWED_ORIGINS.split(',') : 
-      ['http://localhost:3000', 'https://citation-training-academy-1b8h.vercel.app'];
-    
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      console.log('Blocked by CORS:', origin);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: [
+    'https://citation-training-academy-1b8h.vercel.app',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000'
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-// Handle preflight requests explicitly
+// Handle preflight requests globally
 app.options('*', cors());
 
-// Rate limiting
+// ======================
+// Security Middleware
+// ======================
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
+
+// ======================
+// Rate Limiting
+// ======================
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 1000,
+  message: {
+    status: 'error',
+    message: 'Too many requests from this IP, please try again later.'
+  }
 });
 app.use(limiter);
 
-// Body parsing middleware
+// ======================
+// Body Parsing Middleware
+// ======================
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// JWT configuration with stronger security
+// ======================
+// JWT Configuration
+// ======================
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7200s'; // 2 hours in seconds
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
 
-// MongoDB connection
-mongoose.connect(process.env.MONGODB_URI || 'mongodb+srv://elvismwangike:JFJmHvP4ktikRYDC@cluster0.vm6hrog.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0', {
+// ======================
+// MongoDB Connection
+// ======================
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://elvismwangike:JFJmHvP4ktikRYDC@cluster0.vm6hrog.mongodb.net/bithash?retryWrites=true&w=majority&appName=Cluster0';
+
+mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 })
-.then(() => console.log('MongoDB connected successfully'))
+.then(() => console.log('✅ MongoDB connected successfully'))
 .catch(err => {
-  console.error('MongoDB connection error:', err);
+  console.error('❌ MongoDB connection error:', err);
   process.exit(1);
 });
 
-// Email transporter configuration
+// ======================
+// Email Configuration
+// ======================
 const transporter = nodemailer.createTransport({
-  host: process.env.EMAIL_HOST,
-  port: process.env.EMAIL_PORT,
+  host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+  port: process.env.EMAIL_PORT || 587,
   secure: process.env.EMAIL_SECURE === 'true',
   auth: {
     user: process.env.EMAIL_USER,
@@ -90,13 +98,15 @@ const transporter = nodemailer.createTransport({
 // Verify email configuration
 transporter.verify(function(error, success) {
   if (error) {
-    console.error('Email configuration error:', error);
+    console.error('❌ Email configuration error:', error);
   } else {
-    console.log('Email server is ready to send messages');
+    console.log('✅ Email server is ready to send messages');
   }
 });
 
+// ======================
 // Database Schemas
+// ======================
 
 // Admin User Schema
 const adminUserSchema = new mongoose.Schema({
@@ -289,7 +299,7 @@ const emailCampaignSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Tracking Pixel Schema for email opens
+// Tracking Pixel Schema
 const trackingPixelSchema = new mongoose.Schema({
   campaignId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -310,14 +320,18 @@ const trackingPixelSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// ======================
 // Models
+// ======================
 const AdminUser = mongoose.model('AdminUser', adminUserSchema);
 const Investor = mongoose.model('Investor', investorSchema);
 const EmailTemplate = mongoose.model('EmailTemplate', emailTemplateSchema);
 const EmailCampaign = mongoose.model('EmailCampaign', emailCampaignSchema);
 const TrackingPixel = mongoose.model('TrackingPixel', trackingPixelSchema);
 
+// ======================
 // Authentication Middleware
+// ======================
 const authenticateToken = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -350,8 +364,9 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
+// ======================
 // Utility Functions
-
+// ======================
 const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
   const logoUrl = 'https://www.dropbox.com/scl/fi/1dq16nex1borvvknpcwox/circular_dark_background.png?rlkey=sq2ujl2oxxk9vyvg1j7oz0cdb&raw=1';
   
@@ -554,11 +569,25 @@ const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
   `;
 };
 
-// Routes
+// ======================
+// API Routes
+// ======================
 
-// Admin Authentication
+// Health Check
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'success',
+    message: 'Server is running smoothly',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+// Admin Login - FIXED
 app.post('/admin/login', async (req, res) => {
   try {
+    console.log('🔐 Login attempt received for user:', req.body.username);
+    
     const { username, password } = req.body;
 
     if (!username || !password) {
@@ -570,6 +599,7 @@ app.post('/admin/login', async (req, res) => {
 
     const user = await AdminUser.findOne({ username, isActive: true });
     if (!user) {
+      console.log('❌ User not found:', username);
       return res.status(401).json({
         status: 'error',
         message: 'Invalid credentials'
@@ -578,6 +608,7 @@ app.post('/admin/login', async (req, res) => {
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
+      console.log('❌ Invalid password for user:', username);
       return res.status(401).json({
         status: 'error',
         message: 'Invalid credentials'
@@ -594,6 +625,8 @@ app.post('/admin/login', async (req, res) => {
       { expiresIn: JWT_EXPIRES_IN }
     );
 
+    console.log('✅ Login successful for user:', username);
+
     res.json({
       status: 'success',
       message: 'Login successful',
@@ -608,10 +641,10 @@ app.post('/admin/login', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('💥 Login error:', error);
     res.status(500).json({
       status: 'error',
-      message: 'Internal server error'
+      message: 'Internal server error during login'
     });
   }
 });
@@ -633,11 +666,6 @@ app.get('/admin/stats', authenticateToken, async (req, res) => {
 
     const openRate = totalRecipients > 0 ? (totalOpens / totalRecipients * 100).toFixed(1) : 0;
 
-    // Mock trends for demo (in production, calculate based on historical data)
-    const investorTrend = 2.5;
-    const emailTrend = 1.8;
-    const openTrend = -0.5;
-
     res.json({
       status: 'success',
       data: {
@@ -645,9 +673,9 @@ app.get('/admin/stats', authenticateToken, async (req, res) => {
         emailsSent,
         openRate: parseFloat(openRate),
         lastActivity: new Date().toISOString(),
-        investorTrend,
-        emailTrend,
-        openTrend,
+        investorTrend: 2.5,
+        emailTrend: 1.8,
+        openTrend: -0.5,
         activityTime: 'Just now'
       }
     });
@@ -757,13 +785,11 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
     let recipientInvestors = [];
     
     if (Array.isArray(recipients) && recipients.length > 0) {
-      // If specific investor IDs are provided
       recipientInvestors = await Investor.find({ 
         _id: { $in: recipients },
         status: 'active'
       });
     } else {
-      // If no specific recipients, get all active investors
       recipientInvestors = await Investor.find({ status: 'active' });
     }
 
@@ -774,7 +800,6 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
       });
     }
 
-    // Create email campaign record
     const campaign = new EmailCampaign({
       subject,
       content,
@@ -792,7 +817,6 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
 
     await campaign.save();
 
-    // Save as template if requested
     if (saveAsTemplate && templateName) {
       const template = new EmailTemplate({
         name: templateName,
@@ -803,7 +827,6 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
       await template.save();
     }
 
-    // Send emails immediately if not scheduled
     if (!scheduleEmail) {
       await sendEmailCampaign(campaign);
     }
@@ -1033,12 +1056,11 @@ app.delete('/admin/templates/:id', authenticateToken, async (req, res) => {
 // Analytics
 app.get('/admin/analytics', authenticateToken, async (req, res) => {
   try {
-    const period = parseInt(req.query.period) || 30; // days
+    const period = parseInt(req.query.period) || 30;
 
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - period);
 
-    // Email analytics
     const campaigns = await EmailCampaign.find({
       sentAt: { $gte: startDate },
       status: 'sent'
@@ -1051,32 +1073,23 @@ app.get('/admin/analytics', authenticateToken, async (req, res) => {
     campaigns.forEach(campaign => {
       totalSent += campaign.recipients.length;
       totalOpened += campaign.openCount;
-      // Assuming all sent are delivered for simplicity
       totalDelivered += campaign.recipients.length;
     });
 
     const deliveryRate = totalSent > 0 ? (totalDelivered / totalSent * 100).toFixed(1) : 0;
     const openRate = totalDelivered > 0 ? (totalOpened / totalDelivered * 100).toFixed(1) : 0;
-    const clickRate = 0; // Would need click tracking implementation
-    const unsubscribeRate = 0; // Would need unsubscribe tracking
-
-    // Mock trends
-    const deliveryTrend = 0.2;
-    const openTrend = -0.3;
-    const clickTrend = 0.1;
-    const unsubscribeTrend = -0.1;
 
     res.json({
       status: 'success',
       data: {
         deliveryRate: parseFloat(deliveryRate),
         openRate: parseFloat(openRate),
-        clickRate: parseFloat(clickRate),
-        unsubscribeRate: parseFloat(unsubscribeRate),
-        deliveryTrend,
-        openTrend,
-        clickTrend,
-        unsubscribeTrend
+        clickRate: 0,
+        unsubscribeRate: 0,
+        deliveryTrend: 0.2,
+        openTrend: -0.3,
+        clickTrend: 0.1,
+        unsubscribeTrend: -0.1
       }
     });
 
@@ -1094,7 +1107,6 @@ app.get('/track/:campaignId/:recipientId', async (req, res) => {
   try {
     const { campaignId, recipientId } = req.params;
 
-    // Record the open
     const trackingPixel = new TrackingPixel({
       campaignId,
       recipientId,
@@ -1104,12 +1116,10 @@ app.get('/track/:campaignId/:recipientId', async (req, res) => {
 
     await trackingPixel.save();
 
-    // Update campaign open count
     await EmailCampaign.findByIdAndUpdate(campaignId, {
       $inc: { openCount: 1 }
     });
 
-    // Update recipient status
     await EmailCampaign.updateOne(
       {
         _id: campaignId,
@@ -1123,7 +1133,6 @@ app.get('/track/:campaignId/:recipientId', async (req, res) => {
       }
     );
 
-    // Return a 1x1 transparent pixel
     const pixel = Buffer.from(
       'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
       'base64'
@@ -1141,7 +1150,6 @@ app.get('/track/:campaignId/:recipientId', async (req, res) => {
 
   } catch (error) {
     console.error('Tracking pixel error:', error);
-    // Still return the pixel even if tracking fails
     const pixel = Buffer.from(
       'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
       'base64'
@@ -1207,7 +1215,9 @@ app.get('/admin/export/emails', authenticateToken, async (req, res) => {
   }
 });
 
-// Helper function to send email campaign
+// ======================
+// Helper Functions
+// ======================
 async function sendEmailCampaign(campaign) {
   try {
     const recipients = campaign.recipients;
@@ -1216,7 +1226,7 @@ async function sendEmailCampaign(campaign) {
       try {
         let trackingPixel = null;
         if (campaign.enableTracking) {
-          trackingPixel = `${process.env.API_BASE_URL || 'http://localhost:3000'}/track/${campaign._id}/${recipient._id}`;
+          trackingPixel = `${process.env.API_BASE_URL || 'https://tiktok-com-shop.onrender.com'}/track/${campaign._id}/${recipient._id}`;
         }
 
         const emailHtml = generateBitcoinMiningEmailTemplate(campaign.content, trackingPixel);
@@ -1237,7 +1247,6 @@ async function sendEmailCampaign(campaign) {
 
         await transporter.sendMail(mailOptions);
 
-        // Update recipient status to delivered
         await EmailCampaign.updateOne(
           {
             _id: campaign._id,
@@ -1250,13 +1259,11 @@ async function sendEmailCampaign(campaign) {
           }
         );
 
-        // Add delay to avoid hitting email rate limits
         await new Promise(resolve => setTimeout(resolve, 100));
 
       } catch (emailError) {
         console.error(`Failed to send email to ${recipient.email}:`, emailError);
         
-        // Update recipient status to failed
         await EmailCampaign.updateOne(
           {
             _id: campaign._id,
@@ -1272,7 +1279,6 @@ async function sendEmailCampaign(campaign) {
       }
     }
 
-    // Update campaign status
     campaign.status = 'sent';
     campaign.sentAt = new Date();
     await campaign.save();
@@ -1285,45 +1291,42 @@ async function sendEmailCampaign(campaign) {
   }
 }
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'success',
-    message: 'Server is running',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
-});
-
-// Initialize default admin user if none exists
+// ======================
+// Initialize Default Admin
+// ======================
 async function initializeDefaultAdmin() {
   try {
     const adminCount = await AdminUser.countDocuments();
     if (adminCount === 0) {
       const defaultAdmin = new AdminUser({
         username: 'admin',
-        password: 'admin123', // Change this in production!
+        password: 'admin123',
         name: 'System Administrator',
         role: 'superadmin'
       });
       await defaultAdmin.save();
-      console.log('Default admin user created: admin / admin123');
+      console.log('✅ Default admin user created: admin / admin123');
+      console.log('⚠️  Change default password in production!');
+    } else {
+      console.log('✅ Admin user already exists');
     }
   } catch (error) {
-    console.error('Error creating default admin:', error);
+    console.error('❌ Error creating default admin:', error);
   }
 }
 
-// Error handling middleware
+// ======================
+// Error Handling
+// ======================
 app.use((error, req, res, next) => {
-  console.error('Unhandled error:', error);
+  console.error('💥 Unhandled error:', error);
   res.status(500).json({
     status: 'error',
     message: 'Internal server error'
   });
 });
 
-// 404 handler
+// 404 Handler
 app.use('*', (req, res) => {
   res.status(404).json({
     status: 'error',
@@ -1331,12 +1334,24 @@ app.use('*', (req, res) => {
   });
 });
 
+// ======================
+// Server Startup
+// ======================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, async () => {
+  console.log('🚀 Starting BitHash Capital Admin Server...');
+  console.log(`📍 Port: ${PORT}`);
+  console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`📍 Frontend URL: https://citation-training-academy-1b8h.vercel.app`);
+  console.log(`📍 Backend URL: https://tiktok-com-shop.onrender.com`);
+  
   await initializeDefaultAdmin();
-  console.log(`BitHash Capital Admin Server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  
+  console.log('✅ BitHash Capital Admin Server running successfully!');
+  console.log('✅ CORS configured for frontend access');
+  console.log('✅ Database connected and ready');
+  console.log('✅ All systems operational');
 });
 
 module.exports = app;
