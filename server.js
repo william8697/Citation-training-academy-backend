@@ -7,17 +7,13 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const validator = require('validator');
-const multer = require('multer');
-const xlsx = require('xlsx');
 const crypto = require('crypto');
 const moment = require('moment');
 require('dotenv').config();
 
 const app = express();
 
-// ======================
-// CRITICAL FIX: CORS FIRST - Before Helmet
-// ======================
+// Security Middleware
 app.use(cors({
   origin: [
     'https://citation-training-academy-1b8h.vercel.app',
@@ -29,19 +25,12 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-// Handle preflight requests globally
 app.options('*', cors());
-
-// ======================
-// Security Middleware
-// ======================
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// ======================
 // Rate Limiting
-// ======================
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 1000,
@@ -52,21 +41,15 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// ======================
 // Body Parsing Middleware
-// ======================
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ======================
 // JWT Configuration
-// ======================
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
 
-// ======================
 // MongoDB Connection
-// ======================
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://elvismwangike:JFJmHvP4ktikRYDC@cluster0.vm6hrog.mongodb.net/bithash?retryWrites=true&w=majority&appName=Cluster0';
 
 mongoose.connect(MONGODB_URI, {
@@ -79,9 +62,7 @@ mongoose.connect(MONGODB_URI, {
   process.exit(1);
 });
 
-// ======================
 // Email Configuration
-// ======================
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_HOST || 'smtp.gmail.com',
   port: process.env.EMAIL_PORT || 587,
@@ -95,7 +76,6 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Verify email configuration
 transporter.verify(function(error, success) {
   if (error) {
     console.error('❌ Email configuration error:', error);
@@ -104,11 +84,7 @@ transporter.verify(function(error, success) {
   }
 });
 
-// ======================
 // Database Schemas
-// ======================
-
-// Admin User Schema
 const adminUserSchema = new mongoose.Schema({
   username: {
     type: String,
@@ -146,14 +122,12 @@ const adminUserSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Hash password before saving
 adminUserSchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next();
   this.password = await bcrypt.hash(this.password, 12);
   next();
 });
 
-// Investor Schema
 const investorSchema = new mongoose.Schema({
   email: {
     type: String,
@@ -201,7 +175,6 @@ const investorSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Email Template Schema
 const emailTemplateSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -224,6 +197,11 @@ const emailTemplateSchema = new mongoose.Schema({
     default: 'general',
     enum: ['general', 'promotional', 'update', 'alert']
   },
+  templateType: {
+    type: String,
+    default: 'custom',
+    enum: ['custom', 'bithash_sales', 'transaction_contest']
+  },
   isActive: {
     type: Boolean,
     default: true
@@ -237,7 +215,6 @@ const emailTemplateSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Email Campaign Schema
 const emailCampaignSchema = new mongoose.Schema({
   subject: {
     type: String,
@@ -299,7 +276,6 @@ const emailCampaignSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Tracking Pixel Schema
 const trackingPixelSchema = new mongoose.Schema({
   campaignId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -320,18 +296,14 @@ const trackingPixelSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// ======================
 // Models
-// ======================
 const AdminUser = mongoose.model('AdminUser', adminUserSchema);
 const Investor = mongoose.model('Investor', investorSchema);
 const EmailTemplate = mongoose.model('EmailTemplate', emailTemplateSchema);
 const EmailCampaign = mongoose.model('EmailCampaign', emailCampaignSchema);
 const TrackingPixel = mongoose.model('TrackingPixel', trackingPixelSchema);
 
-// ======================
 // Authentication Middleware
-// ======================
 const authenticateToken = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -364,9 +336,7 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// ======================
-// Utility Functions
-// ======================
+// Email Template Generation Functions
 const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
   const logoUrl = 'https://www.dropbox.com/scl/fi/1dq16nex1borvvknpcwox/circular_dark_background.png?rlkey=sq2ujl2oxxk9vyvg1j7oz0cdb&raw=1';
   
@@ -569,11 +539,73 @@ const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
   `;
 };
 
-// ======================
-// API Routes
-// ======================
+// Predefined Templates
+const PREDEFINED_TEMPLATES = {
+  bithash_sales: {
+    name: 'BitHash Sales Template',
+    subject: 'Join BitHash Capital - Earn Returns on Your Crypto Investments',
+    content: `
+      <h2>Don't Let Your Crypto Sit Idle - Start Earning Today!</h2>
+      <p>At BitHash Capital, we transform your dormant cryptocurrency into active, income-generating assets. Instead of letting your Bitcoin and other cryptocurrencies sit idle in your wallet, put them to work with our proven investment platform.</p>
+      
+      <h3>Why Choose BitHash Capital?</h3>
+      <ul>
+        <li><strong>Earn Substantial Returns:</strong> Generate consistent returns on your crypto investments through our professional Bitcoin mining operations</li>
+        <li><strong>Bitcoin-Backed Loans:</strong> Access low-interest loans using your Bitcoin as collateral while continuing to earn returns</li>
+        <li><strong>50% Deposit Bonus:</strong> Enjoy a special 50% bonus on your first deposit to kickstart your investment journey</li>
+        <li><strong>Professional Management:</strong> Our team of experts manages the complex mining infrastructure so you don't have to</li>
+      </ul>
+      
+      <h3>Get Started Today</h3>
+      <p>Join thousands of satisfied investors who are already earning returns on their cryptocurrency investments. With BitHash Capital, your crypto works for you 24/7.</p>
+      
+      <div style="text-align: center; margin: 25px 0;">
+        <a href="https://bithashcapital.com/signup" style="background: #f7931a; color: #0a0a0a; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Start Earning Now</a>
+      </div>
+      
+      <p><strong>Limited Time Offer:</strong> The 50% first deposit bonus is available for a limited time only. Don't miss this opportunity to maximize your initial investment!</p>
+    `,
+    category: 'promotional',
+    templateType: 'bithash_sales'
+  },
+  transaction_contest: {
+    name: 'Transaction Contest Template',
+    subject: 'Win 0.0056 BTC Every Hour - Be the First to Transact!',
+    content: `
+      <h2>🚀 Exciting News: Hourly Bitcoin Giveaway! 🚀</h2>
+      <p>We're thrilled to announce our exclusive hourly transaction contest where you can win <strong>0.0056 BTC</strong> every single hour!</p>
+      
+      <h3>How to Win:</h3>
+      <ul>
+        <li><strong>Be the First:</strong> The first user to complete any transaction during each hour wins</li>
+        <li><strong>Any Transaction Counts:</strong> Deposits, investments, withdrawals - all transactions qualify</li>
+        <li><strong>Hourly Winners:</strong> New winner every hour, 24 times a day</li>
+        <li><strong>Instant Rewards:</strong> 0.0056 BTC credited directly to your account immediately</li>
+      </ul>
+      
+      <h3>Contest Details:</h3>
+      <div style="background: rgba(247, 147, 26, 0.1); padding: 15px; border-radius: 6px; border-left: 4px solid #f7931a;">
+        <p><strong>Prize:</strong> 0.0056 BTC per hour (approximately $200+)</p>
+        <p><strong>Frequency:</strong> Every hour, on the hour</p>
+        <p><strong>Eligibility:</strong> All verified BitHash Capital users</p>
+        <p><strong>Transaction Types:</strong> Any platform transaction qualifies</p>
+      </div>
+      
+      <h3>Pro Tip:</h3>
+      <p>Set reminders for the start of each hour and be ready to make your transaction. The early bird gets the Bitcoin!</p>
+      
+      <div style="text-align: center; margin: 25px 0;">
+        <a href="https://bithashcapital.com/dashboard" style="background: #f7931a; color: #0a0a0a; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Make Your Transaction Now</a>
+      </div>
+      
+      <p><em>Multiple entries allowed! You can win multiple times throughout the day. Good luck!</em></p>
+    `,
+    category: 'promotional',
+    templateType: 'transaction_contest'
+  }
+};
 
-// Health Check
+// API Routes
 app.get('/health', (req, res) => {
   res.json({
     status: 'success',
@@ -583,11 +615,9 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Admin Login - FIXED
+// Admin Login
 app.post('/admin/login', async (req, res) => {
   try {
-    console.log('🔐 Login attempt received for user:', req.body.username);
-    
     const { username, password } = req.body;
 
     if (!username || !password) {
@@ -599,7 +629,6 @@ app.post('/admin/login', async (req, res) => {
 
     const user = await AdminUser.findOne({ username, isActive: true });
     if (!user) {
-      console.log('❌ User not found:', username);
       return res.status(401).json({
         status: 'error',
         message: 'Invalid credentials'
@@ -608,14 +637,12 @@ app.post('/admin/login', async (req, res) => {
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      console.log('❌ Invalid password for user:', username);
       return res.status(401).json({
         status: 'error',
         message: 'Invalid credentials'
       });
     }
 
-    // Update last login
     user.lastLogin = new Date();
     await user.save();
 
@@ -624,8 +651,6 @@ app.post('/admin/login', async (req, res) => {
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
     );
-
-    console.log('✅ Login successful for user:', username);
 
     res.json({
       status: 'success',
@@ -641,7 +666,7 @@ app.post('/admin/login', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('💥 Login error:', error);
+    console.error('Login error:', error);
     res.status(500).json({
       status: 'error',
       message: 'Internal server error during login'
@@ -672,11 +697,7 @@ app.get('/admin/stats', authenticateToken, async (req, res) => {
         totalInvestors,
         emailsSent,
         openRate: parseFloat(openRate),
-        lastActivity: new Date().toISOString(),
-        investorTrend: 2.5,
-        emailTrend: 1.8,
-        openTrend: -0.5,
-        activityTime: 'Just now'
+        lastActivity: new Date().toISOString()
       }
     });
 
@@ -720,32 +741,10 @@ app.get('/admin/investors', authenticateToken, async (req, res) => {
     const totalCount = await Investor.countDocuments(query);
     const totalPages = Math.ceil(totalCount / limit);
 
-    // Get last email status for each investor
-    const investorsWithStatus = await Promise.all(
-      investors.map(async (investor) => {
-        const lastCampaign = await EmailCampaign.findOne({
-          'recipients.investorId': investor._id
-        }).sort({ sentAt: -1 });
-
-        let lastEmailStatus = 'none';
-        if (lastCampaign) {
-          const recipient = lastCampaign.recipients.find(
-            r => r.investorId && r.investorId.toString() === investor._id.toString()
-          );
-          lastEmailStatus = recipient ? recipient.status : 'none';
-        }
-
-        return {
-          ...investor.toObject(),
-          lastEmailStatus
-        };
-      })
-    );
-
     res.json({
       status: 'success',
       data: {
-        investors: investorsWithStatus,
+        investors,
         totalCount,
         totalPages,
         currentPage: page
@@ -761,6 +760,58 @@ app.get('/admin/investors', authenticateToken, async (req, res) => {
   }
 });
 
+// Add Single Investor
+app.post('/admin/investors', authenticateToken, async (req, res) => {
+  try {
+    const { email, name, phone, country } = req.body;
+
+    if (!email || !name) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Email and name are required'
+      });
+    }
+
+    if (!validator.isEmail(email)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Please provide a valid email address'
+      });
+    }
+
+    const existingInvestor = await Investor.findOne({ email });
+    if (existingInvestor) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Investor with this email already exists'
+      });
+    }
+
+    const investor = new Investor({
+      email,
+      name,
+      phone,
+      country,
+      status: 'new'
+    });
+
+    await investor.save();
+
+    res.json({
+      status: 'success',
+      message: 'Investor added successfully',
+      data: { investor }
+    });
+
+  } catch (error) {
+    console.error('Add investor error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to add investor'
+    });
+  }
+});
+
 // Email Campaign Management
 app.post('/admin/send-email', authenticateToken, async (req, res) => {
   try {
@@ -772,7 +823,8 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
       scheduleEmail = false,
       scheduleDate = null,
       saveAsTemplate = false,
-      templateName = null
+      templateName = null,
+      templateType = 'custom'
     } = req.body;
 
     if (!subject || !content) {
@@ -822,7 +874,8 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
         name: templateName,
         subject,
         content,
-        category: 'general'
+        category: 'promotional',
+        templateType: templateType
       });
       await template.save();
     }
@@ -846,6 +899,101 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to send email campaign'
+    });
+  }
+});
+
+// Send to Manual Email Address
+app.post('/admin/send-manual-email', authenticateToken, async (req, res) => {
+  try {
+    const {
+      emailAddresses,
+      subject,
+      content,
+      enableTracking = true
+    } = req.body;
+
+    if (!emailAddresses || !subject || !content) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Email addresses, subject, and content are required'
+      });
+    }
+
+    const emails = Array.isArray(emailAddresses) ? emailAddresses : [emailAddresses];
+    
+    // Validate email addresses
+    const validEmails = emails.filter(email => validator.isEmail(email));
+    if (validEmails.length === 0) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'No valid email addresses provided'
+      });
+    }
+
+    const campaign = new EmailCampaign({
+      subject,
+      content,
+      recipients: validEmails.map(email => ({
+        email: email,
+        name: 'Manual Recipient',
+        status: 'sent'
+      })),
+      sentBy: req.user._id,
+      enableTracking,
+      status: 'sent'
+    });
+
+    await campaign.save();
+
+    // Send emails
+    for (const email of validEmails) {
+      try {
+        let trackingPixel = null;
+        if (enableTracking) {
+          const recipient = campaign.recipients.find(r => r.email === email);
+          if (recipient) {
+            trackingPixel = `${process.env.API_BASE_URL || 'https://tiktok-com-shop.onrender.com'}/track/${campaign._id}/${recipient._id}`;
+          }
+        }
+
+        const emailHtml = generateBitcoinMiningEmailTemplate(content, trackingPixel);
+
+        const mailOptions = {
+          from: {
+            name: 'BitHash Capital',
+            address: process.env.EMAIL_FROM || 'noreply@bithashcapital.com'
+          },
+          to: email,
+          subject: subject,
+          html: emailHtml
+        };
+
+        await transporter.sendMail(mailOptions);
+
+      } catch (emailError) {
+        console.error(`Failed to send email to ${email}:`, emailError);
+      }
+    }
+
+    campaign.status = 'sent';
+    campaign.sentAt = new Date();
+    await campaign.save();
+
+    res.json({
+      status: 'success',
+      message: `Email sent to ${validEmails.length} address(es) successfully`,
+      data: {
+        campaignId: campaign._id,
+        recipientCount: validEmails.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Send manual email error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to send manual email'
     });
   }
 });
@@ -929,8 +1077,7 @@ app.get('/admin/templates', authenticateToken, async (req, res) => {
     const templates = await EmailTemplate.find(query)
       .sort({ updatedAt: -1 })
       .skip(skip)
-      .limit(limit)
-      .select('-content');
+      .limit(limit);
 
     const totalCount = await EmailTemplate.countDocuments(query);
     const totalPages = Math.ceil(totalCount / limit);
@@ -954,9 +1101,31 @@ app.get('/admin/templates', authenticateToken, async (req, res) => {
   }
 });
 
+// Get Predefined Templates
+app.get('/admin/templates/predefined', authenticateToken, async (req, res) => {
+  try {
+    const predefinedTemplates = Object.values(PREDEFINED_TEMPLATES);
+    
+    res.json({
+      status: 'success',
+      data: {
+        templates: predefinedTemplates
+      }
+    });
+
+  } catch (error) {
+    console.error('Predefined templates error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to load predefined templates'
+    });
+  }
+});
+
+// Create Template
 app.post('/admin/templates', authenticateToken, async (req, res) => {
   try {
-    const { name, subject, content, category = 'general' } = req.body;
+    const { name, subject, content, category = 'general', templateType = 'custom' } = req.body;
 
     if (!name || !subject || !content) {
       return res.status(400).json({
@@ -969,7 +1138,8 @@ app.post('/admin/templates', authenticateToken, async (req, res) => {
       name,
       subject,
       content,
-      category
+      category,
+      templateType
     });
 
     await template.save();
@@ -989,6 +1159,7 @@ app.post('/admin/templates', authenticateToken, async (req, res) => {
   }
 });
 
+// Update Template
 app.put('/admin/templates/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1022,6 +1193,7 @@ app.put('/admin/templates/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Delete Template
 app.delete('/admin/templates/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1085,11 +1257,7 @@ app.get('/admin/analytics', authenticateToken, async (req, res) => {
         deliveryRate: parseFloat(deliveryRate),
         openRate: parseFloat(openRate),
         clickRate: 0,
-        unsubscribeRate: 0,
-        deliveryTrend: 0.2,
-        openTrend: -0.3,
-        clickTrend: 0.1,
-        unsubscribeTrend: -0.1
+        unsubscribeRate: 0
       }
     });
 
@@ -1215,9 +1383,7 @@ app.get('/admin/export/emails', authenticateToken, async (req, res) => {
   }
 });
 
-// ======================
 // Helper Functions
-// ======================
 async function sendEmailCampaign(campaign) {
   try {
     const recipients = campaign.recipients;
@@ -1291,10 +1457,8 @@ async function sendEmailCampaign(campaign) {
   }
 }
 
-// ======================
-// Initialize Default Admin
-// ======================
-async function initializeDefaultAdmin() {
+// Initialize Default Admin and Templates
+async function initializeDefaultData() {
   try {
     const adminCount = await AdminUser.countDocuments();
     if (adminCount === 0) {
@@ -1306,18 +1470,24 @@ async function initializeDefaultAdmin() {
       });
       await defaultAdmin.save();
       console.log('✅ Default admin user created: admin / admin123');
-      console.log('⚠️  Change default password in production!');
-    } else {
-      console.log('✅ Admin user already exists');
     }
+
+    // Initialize predefined templates if they don't exist
+    for (const [key, templateData] of Object.entries(PREDEFINED_TEMPLATES)) {
+      const existingTemplate = await EmailTemplate.findOne({ templateType: key });
+      if (!existingTemplate) {
+        const template = new EmailTemplate(templateData);
+        await template.save();
+        console.log(`✅ Predefined template created: ${templateData.name}`);
+      }
+    }
+
   } catch (error) {
-    console.error('❌ Error creating default admin:', error);
+    console.error('❌ Error initializing default data:', error);
   }
 }
 
-// ======================
 // Error Handling
-// ======================
 app.use((error, req, res, next) => {
   console.error('💥 Unhandled error:', error);
   res.status(500).json({
@@ -1334,23 +1504,17 @@ app.use('*', (req, res) => {
   });
 });
 
-// ======================
 // Server Startup
-// ======================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, async () => {
   console.log('🚀 Starting BitHash Capital Admin Server...');
   console.log(`📍 Port: ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`📍 Frontend URL: https://citation-training-academy-1b8h.vercel.app`);
-  console.log(`📍 Backend URL: https://tiktok-com-shop.onrender.com`);
   
-  await initializeDefaultAdmin();
+  await initializeDefaultData();
   
   console.log('✅ BitHash Capital Admin Server running successfully!');
-  console.log('✅ CORS configured for frontend access');
-  console.log('✅ Database connected and ready');
   console.log('✅ All systems operational');
 });
 
