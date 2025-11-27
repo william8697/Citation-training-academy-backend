@@ -8,32 +8,49 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const validator = require('validator');
 const crypto = require('crypto');
-const moment = require('moment');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
 
 // ======================
-// CORS Configuration
+// Enhanced CORS Configuration
 // ======================
-app.use(cors({
-  origin: [
-    'https://citation-training-academy-1b8h.vercel.app',
-    'http://localhost:3000',
-    'http://127.0.0.1:3000'
-  ],
+const corsOptions = {
+  origin: function (origin, callback) {
+    const allowedOrigins = [
+      'https://citation-training-academy.vercel.app',
+      'https://citation-training-academy-1b8h.vercel.app',
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      'https://bithashcapital.com'
+    ];
+    
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-}));
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
+};
 
-app.options('*', cors());
+app.use(cors(corsOptions));
+
+// Handle preflight requests
+app.options('*', cors(corsOptions));
 
 // ======================
 // Security Middleware
 // ======================
 app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  contentSecurityPolicy: false
 }));
 
 // ======================
@@ -45,7 +62,9 @@ const limiter = rateLimit({
   message: {
     status: 'error',
     message: 'Too many requests from this IP, please try again later.'
-  }
+  },
+  standardHeaders: true,
+  legacyHeaders: false
 });
 app.use(limiter);
 
@@ -92,6 +111,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+// Verify email configuration
 transporter.verify(function(error, success) {
   if (error) {
     console.error('❌ Email configuration error:', error);
@@ -104,6 +124,7 @@ transporter.verify(function(error, success) {
 // Database Schemas
 // ======================
 
+// Admin User Schema
 const adminUserSchema = new mongoose.Schema({
   username: {
     type: String,
@@ -141,12 +162,14 @@ const adminUserSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Hash password before saving
 adminUserSchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next();
   this.password = await bcrypt.hash(this.password, 12);
   next();
 });
 
+// Investor Schema
 const investorSchema = new mongoose.Schema({
   email: {
     type: String,
@@ -194,6 +217,7 @@ const investorSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Email Template Schema
 const emailTemplateSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -229,6 +253,7 @@ const emailTemplateSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Email Campaign Schema
 const emailCampaignSchema = new mongoose.Schema({
   subject: {
     type: String,
@@ -290,6 +315,7 @@ const emailCampaignSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Tracking Pixel Schema
 const trackingPixelSchema = new mongoose.Schema({
   campaignId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -355,7 +381,7 @@ const authenticateToken = async (req, res, next) => {
 };
 
 // ======================
-// Clean Email Template Functions
+// Email Template Generation Functions
 // ======================
 const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
   const logoUrl = 'https://www.dropbox.com/scl/fi/1dq16nex1borvvknpcwox/circular_dark_background.png?rlkey=sq2ujl2oxxk9vyvg1j7oz0cdb&raw=1';
@@ -369,33 +395,33 @@ const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
     <title>BitHash Capital</title>
     <style>
         body {
-            font-family: 'Inter', Arial, sans-serif;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             line-height: 1.6;
-            color: #333333;
-            background-color: #f8f9fa;
+            color: #e5e5e5;
+            background-color: #0a0a0a;
             margin: 0;
             padding: 0;
         }
         .container {
             max-width: 600px;
             margin: 0 auto;
-            background: #ffffff;
-            border: 1px solid #e0e0e0;
+            background: #1a1a1a;
+            border: 1px solid #2d3748;
             border-radius: 8px;
             overflow: hidden;
         }
         .header {
-            background: #0f1419;
+            background: linear-gradient(135deg, #0f1419 0%, #1a2332 100%);
             padding: 30px;
             text-align: center;
-            border-bottom: 4px solid #f7931a;
+            border-bottom: 3px solid #f7931a;
         }
         .logo {
             display: flex;
             align-items: center;
             justify-content: center;
             gap: 12px;
-            margin-bottom: 15px;
+            margin-bottom: 20px;
         }
         .logo img {
             width: 50px;
@@ -403,18 +429,30 @@ const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
             border-radius: 50%;
         }
         .logo-text {
-            font-family: 'Rowdies', Arial, sans-serif;
+            font-family: 'Rowdies', cursive;
             font-size: 28px;
             font-weight: 700;
             color: #ffffff;
         }
-        .bitcoin-symbol {
+        .bitcoin-animation {
             color: #f7931a;
-            font-weight: bold;
+            display: inline-block;
+            animation: bounce 2s infinite;
+        }
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-5px); }
         }
         .content {
             padding: 40px 30px;
-            background: #ffffff;
+            background: #1a1a1a;
+        }
+        .mining-theme {
+            background: linear-gradient(135deg, rgba(247, 147, 26, 0.1) 0%, transparent 50%);
+            border-left: 4px solid #f7931a;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 4px;
         }
         .footer {
             background: #0f1419;
@@ -433,23 +471,20 @@ const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
             border-radius: 20px;
             margin: 10px 0;
             border: 1px solid rgba(72, 187, 120, 0.3);
-            color: #2d3748;
-            font-size: 12px;
         }
         .btn {
             display: inline-block;
-            background: #f7931a;
-            color: #ffffff;
+            background: linear-gradient(135deg, #f7931a 0%, #e68517 100%);
+            color: #0a0a0a;
             padding: 12px 30px;
             text-decoration: none;
             border-radius: 6px;
             font-weight: 600;
             margin: 10px 5px;
             text-align: center;
-            border: none;
         }
         .btn:hover {
-            background: #e68517;
+            background: linear-gradient(135deg, #e68517 0%, #d67714 100%);
         }
         .stats-grid {
             display: grid;
@@ -458,21 +493,21 @@ const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
             margin: 25px 0;
         }
         .stat-card {
-            background: #f8f9fa;
+            background: rgba(255, 255, 255, 0.05);
             padding: 15px;
             border-radius: 6px;
             text-align: center;
-            border: 1px solid #e0e0e0;
+            border: 1px solid rgba(255, 255, 255, 0.1);
         }
         .stat-value {
-            font-size: 20px;
+            font-size: 24px;
             font-weight: 700;
             color: #f7931a;
             margin-bottom: 5px;
         }
         .stat-label {
             font-size: 12px;
-            color: #666666;
+            color: #a0aec0;
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
@@ -495,16 +530,19 @@ const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
             <div class="logo">
                 <img src="${logoUrl}" alt="BitHash Capital Logo">
                 <div class="logo-text">
-                    <span class="bitcoin-symbol">₿</span>itHash Capital
+                    <span class="bitcoin-animation">₿</span>itHash Capital
                 </div>
             </div>
             <div class="security-badge">
+                <i class="fas fa-shield-alt"></i>
                 <span>256-bit AES Encrypted Communication</span>
             </div>
         </div>
         
         <div class="content">
-            ${content}
+            <div class="mining-theme">
+                ${content}
+            </div>
             
             <div class="stats-grid">
                 <div class="stat-card">
@@ -519,10 +557,10 @@ const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
             
             <div style="text-align: center; margin: 30px 0;">
                 <a href="https://bithashcapital.com/dashboard" class="btn">
-                    View Dashboard
+                    <i class="fas fa-chart-line"></i> View Dashboard
                 </a>
-                <a href="https://bithashcapital.com/contact" class="btn" style="background: #2d3748;">
-                    Contact Support
+                <a href="https://bithashcapital.com/contact" class="btn" style="background: linear-gradient(135deg, #2d3748 0%, #4a5568 100%); color: white;">
+                    <i class="fas fa-headset"></i> Contact Support
                 </a>
             </div>
         </div>
@@ -547,137 +585,86 @@ const generateBitcoinMiningEmailTemplate = (content, trackingPixel = null) => {
   `;
 };
 
-// Pre-defined email templates - Clean and Professional
+// Predefined templates
 const PREDEFINED_TEMPLATES = [
   {
-    name: 'BitHash Capital Investment Opportunity',
-    subject: 'Join BitHash Capital - Earn Returns on Your Crypto Investments',
+    name: 'BitHash Investment Pitch',
+    subject: 'Grow Your Crypto with BitHash Capital - Professional Bitcoin Mining',
     content: `
-      <h2 style="color: #f7931a; margin-bottom: 20px;">Unlock the Power of Bitcoin Mining with BitHash Capital</h2>
+      <h2>Unlock the Power of Bitcoin Mining with BitHash Capital</h2>
       
       <p>Dear Investor,</p>
       
-      <p>Instead of letting your cryptocurrency sit idle in your wallet, why not put it to work with BitHash Capital? We offer a unique opportunity to earn substantial returns through our professional Bitcoin mining operations.</p>
+      <p>Instead of letting your cryptocurrency sit idle in your wallet, why not put it to work with BitHash Capital? We offer professional Bitcoin mining services that allow you to earn consistent returns on your crypto investments.</p>
       
-      <div style="background: #f8f9fa; padding: 20px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #f7931a;">
-        <h3 style="color: #f7931a; margin-bottom: 15px;">Why Choose BitHash Capital?</h3>
-        <ul style="margin: 10px 0; padding-left: 20px; color: #333;">
-          <li><strong>Professional Mining Infrastructure:</strong> State-of-the-art ASIC miners with 99.1% uptime</li>
-          <li><strong>Daily Returns:</strong> Earn consistent returns on your investment</li>
-          <li><strong>Low-Interest Bitcoin Loans:</strong> Borrow against your holdings at competitive rates</li>
-          <li><strong>50% Deposit Bonus:</strong> Get 50% bonus on your first deposit</li>
-          <li><strong>24/7 Monitoring:</strong> Professional team ensuring optimal performance</li>
-        </ul>
-      </div>
+      <h3>Why Choose BitHash Capital?</h3>
+      <ul>
+        <li><strong>Professional Mining Operations:</strong> State-of-the-art ASIC miners running 24/7</li>
+        <li><strong>Competitive Returns:</strong> Earn consistent daily returns on your investment</li>
+        <li><strong>Bitcoin-Backed Loans:</strong> Access low-interest loans using your Bitcoin as collateral</li>
+        <li><strong>50% Deposit Bonus:</strong> Enjoy a 50% bonus on your first deposit</li>
+      </ul>
       
-      <p>Our mining facilities are strategically located across North America, Europe, and Asia, utilizing renewable energy sources for sustainable operations.</p>
+      <h3>How It Works:</h3>
+      <ol>
+        <li>Deposit your cryptocurrency to your BitHash account</li>
+        <li>Choose from our flexible investment plans</li>
+        <li>Start earning daily returns from our mining operations</li>
+        <li>Withdraw your profits anytime or reinvest for compound growth</li>
+      </ol>
       
-      <div style="text-align: center; margin: 25px 0;">
-        <a href="https://bithashcapital.com/signup" style="background: #f7931a; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
-          Start Earning Today - Get Your 50% Bonus!
-        </a>
-      </div>
+      <p><strong>Special Offer:</strong> For your first deposit, we're offering a 50% bonus to help you get started with even more mining power.</p>
       
-      <p>Join thousands of satisfied investors who are already benefiting from our mining expertise. Your crypto shouldn't just sit there - let it work for you!</p>
-      
-      <p><strong>Limited Time Offer:</strong> The 50% deposit bonus is available for new investors only. Don't miss this opportunity to maximize your returns.</p>
+      <p>Ready to put your crypto to work? Log in to your dashboard to explore our investment plans and start earning today.</p>
       
       <p>Best regards,<br>
-      <strong>The BitHash Capital Team</strong></p>
+      The BitHash Capital Team</p>
     `,
     category: 'promotional'
   },
   {
-    name: 'Hourly Bitcoin Giveaway',
+    name: 'Hourly Bitcoin Reward',
     subject: 'Win 0.0056 BTC Every Hour - Be the First to Transact!',
     content: `
-      <h2 style="color: #f7931a; margin-bottom: 20px;">Win 0.0056 BTC Every Hour!</h2>
+      <h2>🚀 Win 0.0056 BTC Every Hour! 🚀</h2>
       
       <p>Dear Valued Investor,</p>
       
-      <p>We're excited to announce our exclusive hourly Bitcoin giveaway! Every hour, one lucky investor stands to win 0.0056 BTC simply by being the first to complete a transaction during that hour.</p>
+      <p>We're excited to announce our new hourly Bitcoin reward program! Every hour, one lucky investor has the chance to win 0.0056 BTC simply by being the first to complete a transaction during that hour.</p>
       
-      <div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 20px; border-radius: 6px; margin: 20px 0; text-align: center;">
-        <h3 style="color: #856404; margin-bottom: 15px;">💰 Hourly Prize: 0.0056 BTC 💰</h3>
-        <p style="font-size: 18px; font-weight: 600; margin: 10px 0; color: #856404;">That's approximately $200+ every hour!</p>
-      </div>
+      <h3>How to Win:</h3>
+      <ul>
+        <li><strong>Time Frame:</strong> Each hour, from :00 to :59</li>
+        <li><strong>Prize:</strong> 0.0056 BTC (approximately $200 USD)</li>
+        <li><strong>Eligibility:</strong> Any deposit, withdrawal, or investment transaction</li>
+        <li><strong>Winner:</strong> The first investor to complete any transaction each hour</li>
+      </ul>
       
-      <h3 style="color: #f7931a; margin: 25px 0 15px 0;">How to Win:</h3>
-      <ol style="margin: 15px 0; padding-left: 20px; color: #333;">
-        <li><strong>Be Quick:</strong> Make any transaction (deposit, investment, or trade)</li>
-        <li><strong>Be First:</strong> Become the first transaction of the hour</li>
-        <li><strong>Win Automatically:</strong> 0.0056 BTC credited instantly to your account</li>
+      <h3>Current Hourly Status:</h3>
+      <p><strong>Next drawing:</strong> At the top of the next hour<br>
+      <strong>Current prize pool:</strong> 0.0056 BTC<br>
+      <strong>Last winner:</strong> [Previous winner will be announced]</p>
+      
+      <h3>Pro Tips to Increase Your Chances:</h3>
+      <ol>
+        <li>Schedule smaller, frequent transactions throughout the day</li>
+        <li>Set reminders for the top of each hour</li>
+        <li>Keep your account funded and ready for quick transactions</li>
+        <li>Diversify your transaction types (deposits, investments, etc.)</li>
       </ol>
       
-      <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; margin: 20px 0;">
-        <h4 style="color: #f7931a; margin-bottom: 10px;">Pro Tip:</h4>
-        <p>Set reminders for the start of each hour and be ready to make your transaction. The more you participate, the higher your chances of winning!</p>
-      </div>
+      <p><strong>Remember:</strong> Every transaction counts! Whether you're making a deposit, withdrawing profits, or investing in a new plan, you could be our next hourly winner.</p>
       
-      <p><strong>Multiple Wins Possible:</strong> You can win multiple times throughout the day. Every hour is a new opportunity!</p>
+      <p>Good luck, and may the fastest investor win!</p>
       
-      <div style="text-align: center; margin: 30px 0;">
-        <a href="https://bithashcapital.com/dashboard" style="background: #f7931a; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
-          Start Transacting Now - Win Big!
-        </a>
-      </div>
+      <p>Happy investing,<br>
+      The BitHash Capital Team</p>
       
-      <p>Don't let this golden opportunity pass you by. With 24 chances to win every day, your next transaction could make you our next hourly winner!</p>
-      
-      <p>Good luck and happy trading!</p>
-      
-      <p>Best regards,<br>
-      <strong>The BitHash Capital Team</strong></p>
-      
-      <p style="font-size: 12px; color: #666; margin-top: 20px;">
-        *Terms and conditions apply. Transaction must be completed and confirmed on the blockchain to be eligible. Winner is determined by the first confirmed transaction timestamp each hour.
+      <p style="font-size: 12px; color: #a0aec0; margin-top: 20px;">
+        *Terms and conditions apply. Winner is determined by the timestamp of the first completed transaction each hour. Multiple transactions from the same account are eligible. Prize is awarded in BTC equivalent.
       </p>
     `,
     category: 'promotional'
-  },
-  {
-    name: 'Welcome to BitHash Capital',
-    subject: 'Welcome to BitHash Capital - Start Your Mining Journey',
-    content: `
-      <h2 style="color: #f7931a; margin-bottom: 20px;">Welcome to BitHash Capital!</h2>
-      
-      <p>Dear Investor,</p>
-      
-      <p>Welcome to BitHash Capital - your gateway to professional Bitcoin mining. We're thrilled to have you join our community of savvy investors who are earning consistent returns through our mining operations.</p>
-      
-      <div style="background: #f8f9fa; padding: 20px; border-radius: 6px; margin: 20px 0;">
-        <h3 style="color: #f7931a; margin-bottom: 15px;">Getting Started Guide</h3>
-        <ul style="margin: 10px 0; padding-left: 20px; color: #333;">
-          <li><strong>Complete Your Profile:</strong> Verify your account to unlock all features</li>
-          <li><strong>Make Your First Deposit:</strong> Fund your account to start investing</li>
-          <li><strong>Choose Your Plan:</strong> Select from our range of investment plans</li>
-          <li><strong>Start Earning:</strong> Watch your returns grow daily</li>
-        </ul>
-      </div>
-      
-      <p>Our team is dedicated to providing you with the best mining experience, backed by:</p>
-      
-      <ul style="margin: 15px 0; padding-left: 20px; color: #333;">
-        <li>Professional mining infrastructure</li>
-        <li>24/7 technical support</li>
-        <li>Transparent reporting</li>
-        <li>Secure operations</li>
-      </ul>
-      
-      <div style="text-align: center; margin: 25px 0;">
-        <a href="https://bithashcapital.com/dashboard" style="background: #f7931a; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">
-          Access Your Dashboard
-        </a>
-      </div>
-      
-      <p>If you have any questions or need assistance, our support team is available 24/7 to help you.</p>
-      
-      <p>Welcome aboard, and happy mining!</p>
-      
-      <p>Best regards,<br>
-      <strong>The BitHash Capital Team</strong></p>
-    `,
-    category: 'general'
   }
 ];
 
@@ -695,9 +682,11 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Admin Login
+// Admin Login - FIXED CORS
 app.post('/admin/login', async (req, res) => {
   try {
+    console.log('🔐 Login attempt received for user:', req.body.username);
+    
     const { username, password } = req.body;
 
     if (!username || !password) {
@@ -709,6 +698,7 @@ app.post('/admin/login', async (req, res) => {
 
     const user = await AdminUser.findOne({ username, isActive: true });
     if (!user) {
+      console.log('❌ User not found:', username);
       return res.status(401).json({
         status: 'error',
         message: 'Invalid credentials'
@@ -717,12 +707,14 @@ app.post('/admin/login', async (req, res) => {
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
+      console.log('❌ Invalid password for user:', username);
       return res.status(401).json({
         status: 'error',
         message: 'Invalid credentials'
       });
     }
 
+    // Update last login
     user.lastLogin = new Date();
     await user.save();
 
@@ -731,6 +723,8 @@ app.post('/admin/login', async (req, res) => {
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
     );
+
+    console.log('✅ Login successful for user:', username);
 
     res.json({
       status: 'success',
@@ -746,7 +740,7 @@ app.post('/admin/login', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Login error:', error);
+    console.error('💥 Login error:', error);
     res.status(500).json({
       status: 'error',
       message: 'Internal server error during login'
@@ -825,31 +819,10 @@ app.get('/admin/investors', authenticateToken, async (req, res) => {
     const totalCount = await Investor.countDocuments(query);
     const totalPages = Math.ceil(totalCount / limit);
 
-    const investorsWithStatus = await Promise.all(
-      investors.map(async (investor) => {
-        const lastCampaign = await EmailCampaign.findOne({
-          'recipients.investorId': investor._id
-        }).sort({ sentAt: -1 });
-
-        let lastEmailStatus = 'none';
-        if (lastCampaign) {
-          const recipient = lastCampaign.recipients.find(
-            r => r.investorId && r.investorId.toString() === investor._id.toString()
-          );
-          lastEmailStatus = recipient ? recipient.status : 'none';
-        }
-
-        return {
-          ...investor.toObject(),
-          lastEmailStatus
-        };
-      })
-    );
-
     res.json({
       status: 'success',
       data: {
-        investors: investorsWithStatus,
+        investors,
         totalCount,
         totalPages,
         currentPage: page
@@ -858,6 +831,26 @@ app.get('/admin/investors', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('Investors error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to load investors'
+    });
+  }
+});
+
+// Get all investors for selection
+app.get('/admin/investors/all', authenticateToken, async (req, res) => {
+  try {
+    const investors = await Investor.find({ status: 'active' })
+      .select('name email')
+      .sort({ name: 1 });
+
+    res.json({
+      status: 'success',
+      data: investors
+    });
+  } catch (error) {
+    console.error('Get all investors error:', error);
     res.status(500).json({
       status: 'error',
       message: 'Failed to load investors'
@@ -890,11 +883,18 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
     let recipientInvestors = [];
     
     if (Array.isArray(recipients) && recipients.length > 0) {
-      recipientInvestors = await Investor.find({ 
-        _id: { $in: recipients },
-        status: 'active'
-      });
+      // If recipients are email addresses (manual input)
+      if (typeof recipients[0] === 'string' && recipients[0].includes('@')) {
+        recipientInvestors = recipients.map(email => ({ email, name: email }));
+      } else {
+        // If recipients are investor IDs
+        recipientInvestors = await Investor.find({ 
+          _id: { $in: recipients },
+          status: 'active'
+        });
+      }
     } else {
+      // Send to all active investors
       recipientInvestors = await Investor.find({ status: 'active' });
     }
 
@@ -909,9 +909,9 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
       subject,
       content,
       recipients: recipientInvestors.map(inv => ({
-        investorId: inv._id,
+        investorId: inv._id || null,
         email: inv.email,
-        name: inv.name,
+        name: inv.name || inv.email,
         status: 'sent'
       })),
       sentBy: req.user._id,
@@ -1035,8 +1035,7 @@ app.get('/admin/templates', authenticateToken, async (req, res) => {
     const templates = await EmailTemplate.find(query)
       .sort({ updatedAt: -1 })
       .skip(skip)
-      .limit(limit)
-      .select('-content');
+      .limit(limit);
 
     const totalCount = await EmailTemplate.countDocuments(query);
     const totalPages = Math.ceil(totalCount / limit);
@@ -1060,7 +1059,7 @@ app.get('/admin/templates', authenticateToken, async (req, res) => {
   }
 });
 
-// Get template by ID
+// Get specific template
 app.get('/admin/templates/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1190,7 +1189,7 @@ app.delete('/admin/templates/:id', authenticateToken, async (req, res) => {
 });
 
 // Get predefined templates
-app.get('/admin/predefined-templates', authenticateToken, async (req, res) => {
+app.get('/admin/templates/predefined', authenticateToken, async (req, res) => {
   try {
     res.json({
       status: 'success',
@@ -1321,7 +1320,7 @@ app.get('/admin/export/investors', authenticateToken, async (req, res) => {
 
     const csvHeader = 'Name,Email,Phone,Country,Join Date,Tier,Status,Total Invested\n';
     const csvRows = investors.map(inv => 
-      `"${inv.name}","${inv.email}","${inv.phone || ''}","${inv.country || ''}","${moment(inv.joinDate).format('YYYY-MM-DD')}","${inv.tier}","${inv.status}",${inv.totalInvested}`
+      `"${inv.name}","${inv.email}","${inv.phone || ''}","${inv.country || ''}","${new Date(inv.joinDate).toISOString().split('T')[0]}","${inv.tier}","${inv.status}",${inv.totalInvested}`
     ).join('\n');
 
     const csv = csvHeader + csvRows;
@@ -1351,7 +1350,7 @@ app.get('/admin/export/emails', authenticateToken, async (req, res) => {
       const openRate = campaign.recipients.length > 0 ? 
         ((campaign.openCount / campaign.recipients.length) * 100).toFixed(1) : 0;
       
-      return `"${campaign.subject}","${moment(campaign.sentAt).format('YYYY-MM-DD HH:mm')}",${campaign.recipients.length},${openRate}%,"${campaign.sentBy?.name || 'System'}"`;
+      return `"${campaign.subject}","${new Date(campaign.sentAt).toISOString()}",${campaign.recipients.length},${openRate}%,"${campaign.sentBy?.name || 'System'}"`;
     }).join('\n');
 
     const csv = csvHeader + csvRows;
@@ -1448,8 +1447,9 @@ async function sendEmailCampaign(campaign) {
 // ======================
 // Initialize Default Admin and Templates
 // ======================
-async function initializeDefaultAdmin() {
+async function initializeDefaultData() {
   try {
+    // Create default admin if none exists
     const adminCount = await AdminUser.countDocuments();
     if (adminCount === 0) {
       const defaultAdmin = new AdminUser({
@@ -1460,27 +1460,25 @@ async function initializeDefaultAdmin() {
       });
       await defaultAdmin.save();
       console.log('✅ Default admin user created: admin / admin123');
+      console.log('⚠️  Change default password in production!');
     } else {
       console.log('✅ Admin user already exists');
     }
-  } catch (error) {
-    console.error('❌ Error creating default admin:', error);
-  }
-}
 
-async function initializePredefinedTemplates() {
-  try {
-    for (const templateData of PREDEFINED_TEMPLATES) {
-      const existingTemplate = await EmailTemplate.findOne({ name: templateData.name });
+    // Create predefined templates if they don't exist
+    for (const predefinedTemplate of PREDEFINED_TEMPLATES) {
+      const existingTemplate = await EmailTemplate.findOne({ name: predefinedTemplate.name });
       if (!existingTemplate) {
-        const template = new EmailTemplate(templateData);
+        const template = new EmailTemplate(predefinedTemplate);
         await template.save();
-        console.log(`✅ Predefined template created: ${templateData.name}`);
+        console.log(`✅ Created predefined template: ${predefinedTemplate.name}`);
       }
     }
-    console.log('✅ All predefined templates initialized');
+
+    console.log('✅ All default data initialized successfully');
+
   } catch (error) {
-    console.error('❌ Error creating predefined templates:', error);
+    console.error('❌ Error initializing default data:', error);
   }
 }
 
@@ -1512,11 +1510,14 @@ app.listen(PORT, async () => {
   console.log('🚀 Starting BitHash Capital Admin Server...');
   console.log(`📍 Port: ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`📍 Frontend URL: https://citation-training-academy.vercel.app`);
+  console.log(`📍 Backend URL: https://tiktok-com-shop.onrender.com`);
   
-  await initializeDefaultAdmin();
-  await initializePredefinedTemplates();
+  await initializeDefaultData();
   
   console.log('✅ BitHash Capital Admin Server running successfully!');
+  console.log('✅ CORS configured for frontend access');
+  console.log('✅ Database connected and ready');
   console.log('✅ All systems operational');
 });
 
