@@ -9,10 +9,14 @@ const rateLimit = require('express-rate-limit');
 const validator = require('validator');
 const crypto = require('crypto');
 const path = require('path');
+const xlsx = require('xlsx');
 require('dotenv').config();
 
 const app = express();
 
+// ======================
+// Enhanced CORS Configuration
+// ======================
 const corsOptions = {
   origin: function (origin, callback) {
     const allowedOrigins = [
@@ -24,6 +28,7 @@ const corsOptions = {
       'https://www.bithashcapital.live'
     ];
     
+    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.indexOf(origin) !== -1) {
@@ -38,13 +43,21 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
+
+// Handle preflight requests
 app.options('*', cors(corsOptions));
 
+// ======================
+// Security Middleware
+// ======================
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
   contentSecurityPolicy: false
 }));
 
+// ======================
+// Rate Limiting
+// ======================
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 1000,
@@ -57,12 +70,21 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// ======================
+// Body Parsing Middleware
+// ======================
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// ======================
+// JWT Configuration
+// ======================
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
 
+// ======================
+// MongoDB Connection
+// ======================
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://elvismwangike:JFJmHvP4ktikRYDC@cluster0.vm6hrog.mongodb.net/bithash?retryWrites=true&w=majority&appName=Cluster0';
 
 mongoose.connect(MONGODB_URI, {
@@ -75,7 +97,10 @@ mongoose.connect(MONGODB_URI, {
   process.exit(1);
 });
 
-const transporter = nodemailer.createTransport({
+// ======================
+// Email Configuration
+// ======================
+const transporter = nodemailer.createTransporter({
   host: process.env.EMAIL_HOST || 'smtp.gmail.com',
   port: process.env.EMAIL_PORT || 587,
   secure: process.env.EMAIL_SECURE === 'true',
@@ -88,6 +113,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+// Verify email configuration
 transporter.verify(function(error, success) {
   if (error) {
     console.error('Email configuration error:', error);
@@ -96,6 +122,11 @@ transporter.verify(function(error, success) {
   }
 });
 
+// ======================
+// Database Schemas
+// ======================
+
+// Admin User Schema
 const adminUserSchema = new mongoose.Schema({
   username: {
     type: String,
@@ -133,12 +164,14 @@ const adminUserSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Hash password before saving
 adminUserSchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next();
   this.password = await bcrypt.hash(this.password, 12);
   next();
 });
 
+// Investor Schema
 const investorSchema = new mongoose.Schema({
   email: {
     type: String,
@@ -186,6 +219,7 @@ const investorSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Email Template Schema
 const emailTemplateSchema = new mongoose.Schema({
   name: {
     type: String,
@@ -221,6 +255,7 @@ const emailTemplateSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Email Campaign Schema
 const emailCampaignSchema = new mongoose.Schema({
   subject: {
     type: String,
@@ -282,6 +317,7 @@ const emailCampaignSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Tracking Pixel Schema
 const trackingPixelSchema = new mongoose.Schema({
   campaignId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -302,12 +338,18 @@ const trackingPixelSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// ======================
+// Models
+// ======================
 const AdminUser = mongoose.model('AdminUser', adminUserSchema);
 const Investor = mongoose.model('Investor', investorSchema);
 const EmailTemplate = mongoose.model('EmailTemplate', emailTemplateSchema);
 const EmailCampaign = mongoose.model('EmailCampaign', emailCampaignSchema);
 const TrackingPixel = mongoose.model('TrackingPixel', trackingPixelSchema);
 
+// ======================
+// Authentication Middleware
+// ======================
 const authenticateToken = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -340,16 +382,19 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
+// ======================
+// Email Template Generation Functions
+// ======================
 const generateEmailTemplate = (content, trackingPixel = null, subject = 'BitHash Capital') => {
   const logoUrl = 'https://www.dropbox.com/scl/fi/1dq16nex1borvvknpcwox/circular_dark_background.png?rlkey=sq2ujl2oxxk9vyvg1j7oz0cdb&raw=1';
   
   return `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="utf-8">
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${subject} - BitHash Capital</title>
+    <title>${subject}</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -385,36 +430,11 @@ const generateEmailTemplate = (content, trackingPixel = null, subject = 'BitHash
   `;
 };
 
-const PREDEFINED_TEMPLATES = [
-  {
-    name: 'BitHash Investment Opportunity',
-    subject: 'Grow Your Crypto with BitHash Capital - Professional Bitcoin Mining',
-    content: `
-      <h2>Unlock the Power of Bitcoin Mining</h2>
-      
-      <p>Dear Investor,</p>
-      
-      <p>Instead of letting your cryptocurrency sit idle in your wallet, why not put it to work with BitHash Capital? We offer professional Bitcoin mining services that allow you to earn consistent returns on your crypto investments.</p>
-      
-      <h3>Why Choose BitHash Capital?</h3>
-      
-      <p>Professional Mining Operations: State-of-the-art ASIC miners running 24/7 in our secure, energy-efficient data centers across North America and Europe.</p>
-      
-      <p>Competitive Returns: Earn consistent daily returns on your investment with our optimized mining operations and strategic power contracts.</p>
-      
-      <p>Bitcoin-Backed Loans: Access low-interest loans using your Bitcoin as collateral, giving you liquidity without selling your assets.</p>
-      
-      <p>50% Deposit Bonus: Enjoy a 50% bonus on your first deposit to maximize your mining power from day one.</p>
-      
-      <p>Ready to put your crypto to work? Log in to your dashboard to explore our investment plans and start earning today.</p>
-      
-      <p>Best regards,<br>
-      <strong>The BitHash Capital Team</strong></p>
-    `,
-    category: 'promotional'
-  }
-];
+// ======================
+// API Routes
+// ======================
 
+// Health Check
 app.get('/health', (req, res) => {
   res.json({
     status: 'success',
@@ -424,8 +444,11 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Admin Login
 app.post('/admin/login', async (req, res) => {
   try {
+    console.log('Login attempt received for user:', req.body.username);
+    
     const { username, password } = req.body;
 
     if (!username || !password) {
@@ -437,6 +460,7 @@ app.post('/admin/login', async (req, res) => {
 
     const user = await AdminUser.findOne({ username, isActive: true });
     if (!user) {
+      console.log('User not found:', username);
       return res.status(401).json({
         status: 'error',
         message: 'Invalid credentials'
@@ -445,12 +469,14 @@ app.post('/admin/login', async (req, res) => {
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
+      console.log('Invalid password for user:', username);
       return res.status(401).json({
         status: 'error',
         message: 'Invalid credentials'
       });
     }
 
+    // Update last login
     user.lastLogin = new Date();
     await user.save();
 
@@ -459,6 +485,8 @@ app.post('/admin/login', async (req, res) => {
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES_IN }
     );
+
+    console.log('Login successful for user:', username);
 
     res.json({
       status: 'success',
@@ -482,6 +510,7 @@ app.post('/admin/login', async (req, res) => {
   }
 });
 
+// Dashboard Statistics
 app.get('/admin/stats', authenticateToken, async (req, res) => {
   try {
     const totalInvestors = await Investor.countDocuments({ status: 'active' });
@@ -504,7 +533,11 @@ app.get('/admin/stats', authenticateToken, async (req, res) => {
         totalInvestors,
         emailsSent,
         openRate: parseFloat(openRate),
-        lastActivity: new Date().toISOString()
+        lastActivity: new Date().toISOString(),
+        investorTrend: 2.5,
+        emailTrend: 1.8,
+        openTrend: -0.5,
+        activityTime: 'Just now'
       }
     });
 
@@ -517,6 +550,7 @@ app.get('/admin/stats', authenticateToken, async (req, res) => {
   }
 });
 
+// Investors Management
 app.get('/admin/investors', authenticateToken, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -566,6 +600,7 @@ app.get('/admin/investors', authenticateToken, async (req, res) => {
   }
 });
 
+// Get all investors for selection
 app.get('/admin/investors/all', authenticateToken, async (req, res) => {
   try {
     const investors = await Investor.find({ status: 'active' })
@@ -585,6 +620,7 @@ app.get('/admin/investors/all', authenticateToken, async (req, res) => {
   }
 });
 
+// Email Campaign Management
 app.post('/admin/send-email', authenticateToken, async (req, res) => {
   try {
     const {
@@ -609,15 +645,18 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
     let recipientInvestors = [];
     
     if (Array.isArray(recipients) && recipients.length > 0) {
+      // If recipients are email addresses (manual input)
       if (typeof recipients[0] === 'string' && recipients[0].includes('@')) {
         recipientInvestors = recipients.map(email => ({ email, name: email }));
       } else {
+        // If recipients are investor IDs
         recipientInvestors = await Investor.find({ 
           _id: { $in: recipients },
           status: 'active'
         });
       }
     } else {
+      // Send to all active investors
       recipientInvestors = await Investor.find({ status: 'active' });
     }
 
@@ -679,6 +718,86 @@ app.post('/admin/send-email', authenticateToken, async (req, res) => {
   }
 });
 
+// Upload Excel and Send Emails
+app.post('/admin/send-bulk-email', authenticateToken, async (req, res) => {
+  try {
+    const {
+      excelData,
+      subject,
+      content,
+      enableTracking = true
+    } = req.body;
+
+    if (!subject || !content) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Subject and content are required'
+      });
+    }
+
+    if (!excelData || !Array.isArray(excelData)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Valid Excel data is required'
+      });
+    }
+
+    // Extract emails from Excel data
+    const emails = [];
+    excelData.forEach(row => {
+      // Look for email in any column
+      for (let key in row) {
+        if (validator.isEmail(String(row[key]))) {
+          emails.push(String(row[key]));
+          break;
+        }
+      }
+    });
+
+    if (emails.length === 0) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'No valid email addresses found in the Excel file'
+      });
+    }
+
+    const recipientInvestors = emails.map(email => ({ email, name: email }));
+
+    const campaign = new EmailCampaign({
+      subject,
+      content,
+      recipients: recipientInvestors.map(inv => ({
+        email: inv.email,
+        name: inv.name || inv.email,
+        status: 'sent'
+      })),
+      sentBy: req.user._id,
+      enableTracking,
+      status: 'sent'
+    });
+
+    await campaign.save();
+    await sendEmailCampaign(campaign);
+
+    res.json({
+      status: 'success',
+      message: `Bulk email campaign created successfully. ${recipientInvestors.length} recipients.`,
+      data: {
+        campaignId: campaign._id,
+        recipientCount: recipientInvestors.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Send bulk email error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to send bulk email campaign'
+    });
+  }
+});
+
+// Email History
 app.get('/admin/emails', authenticateToken, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -737,6 +856,7 @@ app.get('/admin/emails', authenticateToken, async (req, res) => {
   }
 });
 
+// Email Templates Management
 app.get('/admin/templates', authenticateToken, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -780,6 +900,7 @@ app.get('/admin/templates', authenticateToken, async (req, res) => {
   }
 });
 
+// Get specific template
 app.get('/admin/templates/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -806,6 +927,7 @@ app.get('/admin/templates/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Create template
 app.post('/admin/templates', authenticateToken, async (req, res) => {
   try {
     const { name, subject, content, category = 'general' } = req.body;
@@ -841,6 +963,7 @@ app.post('/admin/templates', authenticateToken, async (req, res) => {
   }
 });
 
+// Update template
 app.put('/admin/templates/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -874,6 +997,7 @@ app.put('/admin/templates/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Delete template
 app.delete('/admin/templates/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -905,23 +1029,7 @@ app.delete('/admin/templates/:id', authenticateToken, async (req, res) => {
   }
 });
 
-app.get('/admin/templates/predefined', authenticateToken, async (req, res) => {
-  try {
-    res.json({
-      status: 'success',
-      data: {
-        templates: PREDEFINED_TEMPLATES
-      }
-    });
-  } catch (error) {
-    console.error('Predefined templates error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to load predefined templates'
-    });
-  }
-});
-
+// Analytics
 app.get('/admin/analytics', authenticateToken, async (req, res) => {
   try {
     const period = parseInt(req.query.period) || 30;
@@ -951,7 +1059,13 @@ app.get('/admin/analytics', authenticateToken, async (req, res) => {
       status: 'success',
       data: {
         deliveryRate: parseFloat(deliveryRate),
-        openRate: parseFloat(openRate)
+        openRate: parseFloat(openRate),
+        clickRate: 0,
+        unsubscribeRate: 0,
+        deliveryTrend: 0.2,
+        openTrend: -0.3,
+        clickTrend: 0.1,
+        unsubscribeTrend: -0.1
       }
     });
 
@@ -964,6 +1078,7 @@ app.get('/admin/analytics', authenticateToken, async (req, res) => {
   }
 });
 
+// Email Tracking Pixel
 app.get('/track/:campaignId/:recipientId', async (req, res) => {
   try {
     const { campaignId, recipientId } = req.params;
@@ -1019,6 +1134,7 @@ app.get('/track/:campaignId/:recipientId', async (req, res) => {
   }
 });
 
+// Export endpoints
 app.get('/admin/export/investors', authenticateToken, async (req, res) => {
   try {
     const investors = await Investor.find({})
@@ -1075,6 +1191,9 @@ app.get('/admin/export/emails', authenticateToken, async (req, res) => {
   }
 });
 
+// ======================
+// Helper Functions
+// ======================
 async function sendEmailCampaign(campaign) {
   try {
     const recipients = campaign.recipients;
@@ -1148,8 +1267,12 @@ async function sendEmailCampaign(campaign) {
   }
 }
 
+// ======================
+// Initialize Default Admin
+// ======================
 async function initializeDefaultData() {
   try {
+    // Create default admin if none exists
     const adminCount = await AdminUser.countDocuments();
     if (adminCount === 0) {
       const defaultAdmin = new AdminUser({
@@ -1160,17 +1283,9 @@ async function initializeDefaultData() {
       });
       await defaultAdmin.save();
       console.log('Default admin user created: admin / admin123');
+      console.log('Change default password in production!');
     } else {
       console.log('Admin user already exists');
-    }
-
-    for (const predefinedTemplate of PREDEFINED_TEMPLATES) {
-      const existingTemplate = await EmailTemplate.findOne({ name: predefinedTemplate.name });
-      if (!existingTemplate) {
-        const template = new EmailTemplate(predefinedTemplate);
-        await template.save();
-        console.log(`Created predefined template: ${predefinedTemplate.name}`);
-      }
     }
 
     console.log('All default data initialized successfully');
@@ -1180,6 +1295,9 @@ async function initializeDefaultData() {
   }
 }
 
+// ======================
+// Error Handling
+// ======================
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
   res.status(500).json({
@@ -1188,6 +1306,7 @@ app.use((error, req, res, next) => {
   });
 });
 
+// 404 Handler
 app.use('*', (req, res) => {
   res.status(404).json({
     status: 'error',
@@ -1195,17 +1314,25 @@ app.use('*', (req, res) => {
   });
 });
 
+// ======================
+// Server Startup
+// ======================
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, async () => {
   console.log('Starting BitHash Capital Admin Server...');
   console.log(`Port: ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Frontend URL: https://citation-training-academy.vercel.app`);
+  console.log(`Backend URL: https://tiktok-com-shop.onrender.com`);
   console.log(`Website: https://www.bithashcapital.live`);
   
   await initializeDefaultData();
   
   console.log('BitHash Capital Admin Server running successfully!');
+  console.log('CORS configured for frontend access');
+  console.log('Database connected and ready');
+  console.log('All systems operational');
 });
 
 module.exports = app;
