@@ -383,54 +383,6 @@ const authenticateToken = async (req, res, next) => {
 };
 
 // ======================
-// Email Template Generation Functions
-// ======================
-const generateEmailTemplate = (content, trackingPixel = null, subject = 'BitHash Capital') => {
-  const logoUrl = 'https://www.dropbox.com/scl/fi/1dq16nex1borvvknpcwox/circular_dark_background.png?rlkey=sq2ujl2oxxk9vyvg1j7oz0cdb&raw=1';
-  
-  return `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${subject}</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Inter', Arial, sans-serif; line-height: 1.6; color: #1a1a1a; background-color: #f8f9fa; margin: 0; padding: 0; }
-        .container { max-width: 600px; margin: 0 auto; background: #ffffff; }
-        .header { background: #0a0a0a; padding: 30px 40px; text-align: center; border-bottom: 3px solid #f0b90b; }
-        .logo-container { display: flex; align-items: center; justify-content: center; gap: 15px; margin-bottom: 15px; }
-        .logo-img { width: 40px; height: 40px; border-radius: 50%; }
-        .logo-text { font-size: 24px; font-weight: 700; color: #f0b90b; letter-spacing: -0.5px; }
-        .content { padding: 40px; background: #ffffff; }
-        .footer { background: #0a0a0a; padding: 25px 40px; text-align: center; color: #999; }
-        .footer-text { font-size: 12px; line-height: 1.5; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <div class="logo-container">
-                <img src="${logoUrl}" alt="BitHash Logo" class="logo-img">
-                <div class="logo-text">BitHash Capital</div>
-            </div>
-        </div>
-        <div class="content">
-            ${content}
-        </div>
-        <div class="footer">
-            <p class="footer-text">© 2024 BitHash Capital. All rights reserved.<br>
-            This is an automated message. Please do not reply.</p>
-        </div>
-    </div>
-</body>
-</html>
-  `;
-};
-
-// ======================
 // API Routes
 // ======================
 
