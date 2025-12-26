@@ -1,15 +1,11 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const validator = require('validator');
 const crypto = require('crypto');
-const path = require('path');
-const xlsx = require('xlsx');
 require('dotenv').config();
 
 const app = express();
@@ -28,7 +24,7 @@ const corsOptions = {
       'https://www.bithashcapital.live'
     ];
     
-    // Allow requests with no origin (like mobile apps or curl requests)
+    // Allow requests with no origin
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.indexOf(origin) !== -1) {
@@ -43,8 +39,6 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-
-// Handle preflight requests
 app.options('*', cors(corsOptions));
 
 // ======================
@@ -75,12 +69,6 @@ app.use(limiter);
 // ======================
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// ======================
-// JWT Configuration
-// ======================
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
 
 // ======================
 // MongoDB Connection
@@ -125,51 +113,6 @@ transporter.verify(function(error, success) {
 // ======================
 // Database Schemas
 // ======================
-
-// Admin User Schema
-const adminUserSchema = new mongoose.Schema({
-  username: {
-    type: String,
-    required: true,
-    unique: true,
-    trim: true,
-    minlength: 3,
-    maxlength: 50
-  },
-  password: {
-    type: String,
-    required: true,
-    minlength: 6
-  },
-  name: {
-    type: String,
-    required: true,
-    trim: true,
-    maxlength: 100
-  },
-  role: {
-    type: String,
-    default: 'admin',
-    enum: ['admin', 'superadmin']
-  },
-  lastLogin: {
-    type: Date,
-    default: Date.now
-  },
-  isActive: {
-    type: Boolean,
-    default: true
-  }
-}, {
-  timestamps: true
-});
-
-// Hash password before saving
-adminUserSchema.pre('save', async function(next) {
-  if (!this.isModified('password')) return next();
-  this.password = await bcrypt.hash(this.password, 12);
-  next();
-});
 
 // Investor Schema
 const investorSchema = new mongoose.Schema({
@@ -219,121 +162,44 @@ const investorSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Email Template Schema
-const emailTemplateSchema = new mongoose.Schema({
-  name: {
+// Email Sent Log Schema
+const emailLogSchema = new mongoose.Schema({
+  from: {
     type: String,
-    required: true,
-    trim: true,
-    maxlength: 100
+    required: true
+  },
+  to: {
+    type: [String],
+    required: true
   },
   subject: {
     type: String,
-    required: true,
-    trim: true,
-    maxlength: 200
+    required: true
   },
-  content: {
+  html: {
     type: String,
     required: true
   },
-  category: {
-    type: String,
-    default: 'general',
-    enum: ['general', 'promotional', 'update', 'alert']
-  },
-  isActive: {
-    type: Boolean,
-    default: true
-  },
-  usedCount: {
-    type: Number,
-    default: 0
-  },
-  lastUsed: Date
-}, {
-  timestamps: true
-});
-
-// Email Campaign Schema
-const emailCampaignSchema = new mongoose.Schema({
-  subject: {
-    type: String,
-    required: true,
-    trim: true,
-    maxlength: 200
-  },
-  content: {
-    type: String,
-    required: true
-  },
-  recipients: [{
-    investorId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Investor'
-    },
-    email: String,
-    name: String,
-    status: {
-      type: String,
-      default: 'sent',
-      enum: ['sent', 'delivered', 'opened', 'failed']
-    },
-    openedAt: Date,
-    error: String
-  }],
-  sentBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'AdminUser',
-    required: true
+  text: {
+    type: String
   },
   sentAt: {
     type: Date,
     default: Date.now
   },
-  scheduledFor: Date,
-  enableTracking: {
-    type: Boolean,
-    default: true
-  },
-  openCount: {
-    type: Number,
-    default: 0
-  },
   status: {
     type: String,
-    default: 'draft',
-    enum: ['draft', 'scheduled', 'sent', 'failed']
+    default: 'sent',
+    enum: ['sent', 'failed']
   },
-  templateId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'EmailTemplate'
+  error: {
+    type: String
   },
   metadata: {
     ipAddress: String,
-    userAgent: String
+    userAgent: String,
+    frontendOrigin: String
   }
-}, {
-  timestamps: true
-});
-
-// Tracking Pixel Schema
-const trackingPixelSchema = new mongoose.Schema({
-  campaignId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'EmailCampaign',
-    required: true
-  },
-  recipientId: {
-    type: mongoose.Schema.Types.ObjectId,
-    required: true
-  },
-  openedAt: {
-    type: Date,
-    default: Date.now
-  },
-  ipAddress: String,
-  userAgent: String
 }, {
   timestamps: true
 });
@@ -341,46 +207,8 @@ const trackingPixelSchema = new mongoose.Schema({
 // ======================
 // Models
 // ======================
-const AdminUser = mongoose.model('AdminUser', adminUserSchema);
 const Investor = mongoose.model('Investor', investorSchema);
-const EmailTemplate = mongoose.model('EmailTemplate', emailTemplateSchema);
-const EmailCampaign = mongoose.model('EmailCampaign', emailCampaignSchema);
-const TrackingPixel = mongoose.model('TrackingPixel', trackingPixelSchema);
-
-// ======================
-// Authentication Middleware
-// ======================
-const authenticateToken = async (req, res, next) => {
-  try {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) {
-      return res.status(401).json({
-        status: 'error',
-        message: 'Access token required'
-      });
-    }
-
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await AdminUser.findById(decoded.id).select('-password');
-    
-    if (!user || !user.isActive) {
-      return res.status(401).json({
-        status: 'error',
-        message: 'User not found or inactive'
-      });
-    }
-
-    req.user = user;
-    next();
-  } catch (error) {
-    return res.status(403).json({
-      status: 'error',
-      message: 'Invalid or expired token'
-    });
-  }
-};
+const EmailLog = mongoose.model('EmailLog', emailLogSchema);
 
 // ======================
 // API Routes
@@ -396,167 +224,301 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Admin Login
-app.post('/admin/login', async (req, res) => {
+// Simple Email Sending Endpoint
+app.post('/send-email', async (req, res) => {
   try {
-    console.log('Login attempt received for user:', req.body.username);
-    
-    const { username, password } = req.body;
+    const {
+      to,
+      subject,
+      html,
+      text,
+      fromName = 'BitHash Capital',
+      fromEmail = process.env.EMAIL_FROM || 'noreply@bithashcapital.com'
+    } = req.body;
 
-    if (!username || !password) {
+    // Validate required fields
+    if (!to || !subject || (!html && !text)) {
       return res.status(400).json({
         status: 'error',
-        message: 'Username and password are required'
+        message: 'Missing required fields: to, subject, and either html or text content'
       });
     }
 
-    const user = await AdminUser.findOne({ username, isActive: true });
-    if (!user) {
-      console.log('User not found:', username);
-      return res.status(401).json({
-        status: 'error',
-        message: 'Invalid credentials'
-      });
-    }
-
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      console.log('Invalid password for user:', username);
-      return res.status(401).json({
-        status: 'error',
-        message: 'Invalid credentials'
-      });
-    }
-
-    // Update last login
-    user.lastLogin = new Date();
-    await user.save();
-
-    const token = jwt.sign(
-      { id: user._id, username: user.username, role: user.role },
-      JWT_SECRET,
-      { expiresIn: JWT_EXPIRES_IN }
-    );
-
-    console.log('Login successful for user:', username);
-
-    res.json({
-      status: 'success',
-      message: 'Login successful',
-      token,
-      user: {
-        id: user._id,
-        username: user.username,
-        name: user.name,
-        role: user.role,
-        lastLogin: user.lastLogin
-      }
-    });
-
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Internal server error during login'
-    });
-  }
-});
-
-// Dashboard Statistics
-app.get('/admin/stats', authenticateToken, async (req, res) => {
-  try {
-    const totalInvestors = await Investor.countDocuments({ status: 'active' });
-    const emailsSent = await EmailCampaign.countDocuments({ status: 'sent' });
+    // Validate email addresses
+    const recipients = Array.isArray(to) ? to : [to];
+    const invalidEmails = recipients.filter(email => !validator.isEmail(email));
     
-    const emailCampaigns = await EmailCampaign.find({ status: 'sent' });
-    let totalRecipients = 0;
-    let totalOpens = 0;
+    if (invalidEmails.length > 0) {
+      return res.status(400).json({
+        status: 'error',
+        message: `Invalid email addresses: ${invalidEmails.join(', ')}`
+      });
+    }
 
-    emailCampaigns.forEach(campaign => {
-      totalRecipients += campaign.recipients.length;
-      totalOpens += campaign.openCount;
+    // Prepare email options
+    const mailOptions = {
+      from: {
+        name: fromName,
+        address: fromEmail
+      },
+      to: recipients,
+      subject: subject,
+      html: html || undefined,
+      text: text || undefined
+    };
+
+    // Send email
+    const info = await transporter.sendMail(mailOptions);
+
+    // Log the email
+    const emailLog = new EmailLog({
+      from: `${fromName} <${fromEmail}>`,
+      to: recipients,
+      subject,
+      html: html || '',
+      text: text || '',
+      status: 'sent',
+      metadata: {
+        ipAddress: req.ip,
+        userAgent: req.get('User-Agent'),
+        frontendOrigin: req.get('Origin') || 'unknown'
+      }
     });
 
-    const openRate = totalRecipients > 0 ? (totalOpens / totalRecipients * 100).toFixed(1) : 0;
+    await emailLog.save();
 
     res.json({
       status: 'success',
+      message: 'Email sent successfully',
       data: {
-        totalInvestors,
-        emailsSent,
-        openRate: parseFloat(openRate),
-        lastActivity: new Date().toISOString(),
-        investorTrend: 2.5,
-        emailTrend: 1.8,
-        openTrend: -0.5,
-        activityTime: 'Just now'
+        messageId: info.messageId,
+        recipients: recipients.length,
+        accepted: info.accepted,
+        rejected: info.rejected,
+        logId: emailLog._id
       }
     });
 
   } catch (error) {
-    console.error('Stats error:', error);
+    console.error('Email sending error:', error);
+
+    // Log failed attempt
+    try {
+      const emailLog = new EmailLog({
+        from: req.body.fromName ? `${req.body.fromName} <${req.body.fromEmail || process.env.EMAIL_FROM}>` : process.env.EMAIL_FROM,
+        to: Array.isArray(req.body.to) ? req.body.to : [req.body.to],
+        subject: req.body.subject || '',
+        html: req.body.html || '',
+        text: req.body.text || '',
+        status: 'failed',
+        error: error.message,
+        metadata: {
+          ipAddress: req.ip,
+          userAgent: req.get('User-Agent'),
+          frontendOrigin: req.get('Origin') || 'unknown'
+        }
+      });
+      await emailLog.save();
+    } catch (logError) {
+      console.error('Failed to log error:', logError);
+    }
+
     res.status(500).json({
       status: 'error',
-      message: 'Failed to load statistics'
+      message: 'Failed to send email',
+      error: error.message
     });
   }
 });
 
-// Investors Management
-app.get('/admin/investors', authenticateToken, async (req, res) => {
+// Bulk Email Sending Endpoint
+app.post('/send-bulk-emails', async (req, res) => {
+  try {
+    const {
+      recipients,
+      subject,
+      html,
+      text,
+      fromName = 'BitHash Capital',
+      fromEmail = process.env.EMAIL_FROM || 'noreply@bithashcapital.com'
+    } = req.body;
+
+    // Validate required fields
+    if (!recipients || !subject || (!html && !text)) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Missing required fields: recipients, subject, and either html or text content'
+      });
+    }
+
+    // Validate recipients
+    const recipientList = Array.isArray(recipients) ? recipients : [recipients];
+    const validRecipients = [];
+    const invalidRecipients = [];
+
+    recipientList.forEach(recipient => {
+      if (validator.isEmail(recipient)) {
+        validRecipients.push(recipient);
+      } else {
+        invalidRecipients.push(recipient);
+      }
+    });
+
+    if (validRecipients.length === 0) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'No valid email addresses found in recipients list'
+      });
+    }
+
+    const results = {
+      total: validRecipients.length,
+      sent: 0,
+      failed: 0,
+      details: []
+    };
+
+    // Send emails individually (better for tracking and handling failures)
+    for (const recipient of validRecipients) {
+      try {
+        const mailOptions = {
+          from: {
+            name: fromName,
+            address: fromEmail
+          },
+          to: recipient,
+          subject: subject,
+          html: html || undefined,
+          text: text || undefined
+        };
+
+        const info = await transporter.sendMail(mailOptions);
+
+        // Log successful email
+        const emailLog = new EmailLog({
+          from: `${fromName} <${fromEmail}>`,
+          to: [recipient],
+          subject,
+          html: html || '',
+          text: text || '',
+          status: 'sent',
+          metadata: {
+            ipAddress: req.ip,
+            userAgent: req.get('User-Agent'),
+            frontendOrigin: req.get('Origin') || 'unknown'
+          }
+        });
+
+        await emailLog.save();
+
+        results.sent++;
+        results.details.push({
+          email: recipient,
+          status: 'sent',
+          messageId: info.messageId
+        });
+
+      } catch (error) {
+        console.error(`Failed to send email to ${recipient}:`, error);
+
+        // Log failed email
+        const emailLog = new EmailLog({
+          from: `${fromName} <${fromEmail}>`,
+          to: [recipient],
+          subject,
+          html: html || '',
+          text: text || '',
+          status: 'failed',
+          error: error.message,
+          metadata: {
+            ipAddress: req.ip,
+            userAgent: req.get('User-Agent'),
+            frontendOrigin: req.get('Origin') || 'unknown'
+          }
+        });
+
+        await emailLog.save();
+
+        results.failed++;
+        results.details.push({
+          email: recipient,
+          status: 'failed',
+          error: error.message
+        });
+      }
+
+      // Small delay to prevent rate limiting
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    res.json({
+      status: 'success',
+      message: 'Bulk email sending completed',
+      data: {
+        ...results,
+        invalidRecipients,
+        summary: {
+          sent: results.sent,
+          failed: results.failed,
+          total: results.total,
+          successRate: ((results.sent / results.total) * 100).toFixed(1) + '%'
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Bulk email sending error:', error);
+    
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to process bulk email request',
+      error: error.message
+    });
+  }
+});
+
+// Get Email Logs
+app.get('/email-logs', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const search = req.query.search || '';
-    const filter = req.query.filter || '';
-
+    const limit = parseInt(req.query.limit) || 20;
     const skip = (page - 1) * limit;
 
-    let query = {};
-    if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } }
-      ];
-    }
-
-    if (filter && filter !== 'all') {
-      query.status = filter;
-    }
-
-    const investors = await Investor.find(query)
-      .sort({ joinDate: -1 })
+    const logs = await EmailLog.find()
+      .sort({ sentAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select('-__v');
+      .select('-html -text');
 
-    const totalCount = await Investor.countDocuments(query);
-    const totalPages = Math.ceil(totalCount / limit);
+    const total = await EmailLog.countDocuments();
 
     res.json({
       status: 'success',
       data: {
-        investors,
-        totalCount,
-        totalPages,
-        currentPage: page
+        logs,
+        pagination: {
+          page,
+          limit,
+          total,
+          pages: Math.ceil(total / limit)
+        }
       }
     });
 
   } catch (error) {
-    console.error('Investors error:', error);
+    console.error('Get email logs error:', error);
     res.status(500).json({
       status: 'error',
-      message: 'Failed to load investors'
+      message: 'Failed to retrieve email logs'
     });
   }
 });
 
-// Get all investors for selection
-app.get('/admin/investors/all', authenticateToken, async (req, res) => {
+// Get Investors List
+app.get('/investors', async (req, res) => {
   try {
     const investors = await Investor.find({ status: 'active' })
-      .select('name email')
+      .select('name email phone country tier')
       .sort({ name: 1 });
 
     res.json({
@@ -564,7 +526,7 @@ app.get('/admin/investors/all', authenticateToken, async (req, res) => {
       data: investors
     });
   } catch (error) {
-    console.error('Get all investors error:', error);
+    console.error('Get investors error:', error);
     res.status(500).json({
       status: 'error',
       message: 'Failed to load investors'
@@ -572,680 +534,144 @@ app.get('/admin/investors/all', authenticateToken, async (req, res) => {
   }
 });
 
-// Email Campaign Management
-app.post('/admin/send-email', authenticateToken, async (req, res) => {
+// Add Investor
+app.post('/investors', async (req, res) => {
   try {
-    const {
-      recipients,
-      subject,
-      content,
-      enableTracking = true,
-      scheduleEmail = false,
-      scheduleDate = null,
-      saveAsTemplate = false,
-      templateName = null,
-      templateId = null
-    } = req.body;
+    const { email, name, phone, country, tier } = req.body;
 
-    if (!subject || !content) {
+    if (!email || !name) {
       return res.status(400).json({
         status: 'error',
-        message: 'Subject and content are required'
+        message: 'Email and name are required'
       });
     }
 
-    let recipientInvestors = [];
-    
-    if (Array.isArray(recipients) && recipients.length > 0) {
-      // If recipients are email addresses (manual input)
-      if (typeof recipients[0] === 'string' && recipients[0].includes('@')) {
-        recipientInvestors = recipients.map(email => ({ email, name: email }));
-      } else {
-        // If recipients are investor IDs
-        recipientInvestors = await Investor.find({ 
-          _id: { $in: recipients },
-          status: 'active'
-        });
-      }
-    } else {
-      // Send to all active investors
-      recipientInvestors = await Investor.find({ status: 'active' });
-    }
-
-    if (recipientInvestors.length === 0) {
+    if (!validator.isEmail(email)) {
       return res.status(400).json({
         status: 'error',
-        message: 'No valid recipients found'
+        message: 'Invalid email address'
       });
     }
 
-    const campaign = new EmailCampaign({
-      subject,
-      content,
-      recipients: recipientInvestors.map(inv => ({
-        investorId: inv._id || null,
-        email: inv.email,
-        name: inv.name || inv.email,
-        status: 'sent'
-      })),
-      sentBy: req.user._id,
-      enableTracking,
-      status: scheduleEmail ? 'scheduled' : 'sent',
-      scheduledFor: scheduleEmail ? new Date(scheduleDate) : null,
-      templateId: templateId || null
-    });
-
-    await campaign.save();
-
-    if (saveAsTemplate && templateName) {
-      const template = new EmailTemplate({
-        name: templateName,
-        subject,
-        content,
-        category: 'general'
-      });
-      await template.save();
-    }
-
-    if (!scheduleEmail) {
-      await sendEmailCampaign(campaign);
-    }
-
-    res.json({
-      status: 'success',
-      message: `Email campaign created successfully. ${recipientInvestors.length} recipients.`,
-      data: {
-        campaignId: campaign._id,
-        recipientCount: recipientInvestors.length,
-        scheduled: scheduleEmail
-      }
-    });
-
-  } catch (error) {
-    console.error('Send email error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to send email campaign'
-    });
-  }
-});
-
-// Upload Excel and Send Emails
-app.post('/admin/send-bulk-email', authenticateToken, async (req, res) => {
-  try {
-    const {
-      excelData,
-      subject,
-      content,
-      enableTracking = true
-    } = req.body;
-
-    if (!subject || !content) {
+    const existingInvestor = await Investor.findOne({ email });
+    if (existingInvestor) {
       return res.status(400).json({
         status: 'error',
-        message: 'Subject and content are required'
+        message: 'Investor with this email already exists'
       });
     }
 
-    if (!excelData || !Array.isArray(excelData)) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Valid Excel data is required'
-      });
-    }
-
-    // Extract emails from Excel data
-    const emails = [];
-    excelData.forEach(row => {
-      // Look for email in any column
-      for (let key in row) {
-        if (validator.isEmail(String(row[key]))) {
-          emails.push(String(row[key]));
-          break;
-        }
-      }
-    });
-
-    if (emails.length === 0) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'No valid email addresses found in the Excel file'
-      });
-    }
-
-    const recipientInvestors = emails.map(email => ({ email, name: email }));
-
-    const campaign = new EmailCampaign({
-      subject,
-      content,
-      recipients: recipientInvestors.map(inv => ({
-        email: inv.email,
-        name: inv.name || inv.email,
-        status: 'sent'
-      })),
-      sentBy: req.user._id,
-      enableTracking,
-      status: 'sent'
-    });
-
-    await campaign.save();
-    await sendEmailCampaign(campaign);
-
-    res.json({
-      status: 'success',
-      message: `Bulk email campaign created successfully. ${recipientInvestors.length} recipients.`,
-      data: {
-        campaignId: campaign._id,
-        recipientCount: recipientInvestors.length
-      }
-    });
-
-  } catch (error) {
-    console.error('Send bulk email error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to send bulk email campaign'
-    });
-  }
-});
-
-// Email History
-app.get('/admin/emails', authenticateToken, async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const search = req.query.search || '';
-    const filter = req.query.filter || '';
-
-    const skip = (page - 1) * limit;
-
-    let query = {};
-    if (search) {
-      query.subject = { $regex: search, $options: 'i' };
-    }
-
-    if (filter && filter !== 'all') {
-      query.status = filter;
-    }
-
-    const emails = await EmailCampaign.find(query)
-      .populate('sentBy', 'name username')
-      .sort({ sentAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .select('-content -recipients');
-
-    const totalCount = await EmailCampaign.countDocuments(query);
-    const totalPages = Math.ceil(totalCount / limit);
-
-    const emailsWithStats = emails.map(email => ({
-      id: email._id,
-      subject: email.subject,
-      recipientCount: email.recipients.length,
-      sentDate: email.sentAt,
-      openRate: email.recipients.length > 0 ? 
-        ((email.openCount / email.recipients.length) * 100).toFixed(1) : 0,
-      status: email.status,
-      sentBy: email.sentBy?.name || 'System'
-    }));
-
-    res.json({
-      status: 'success',
-      data: {
-        emails: emailsWithStats,
-        totalCount,
-        totalPages,
-        currentPage: page
-      }
-    });
-
-  } catch (error) {
-    console.error('Email history error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to load email history'
-    });
-  }
-});
-
-// Email Templates Management
-app.get('/admin/templates', authenticateToken, async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
-    const search = req.query.search || '';
-
-    const skip = (page - 1) * limit;
-
-    let query = { isActive: true };
-    if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { subject: { $regex: search, $options: 'i' } }
-      ];
-    }
-
-    const templates = await EmailTemplate.find(query)
-      .sort({ updatedAt: -1 })
-      .skip(skip)
-      .limit(limit);
-
-    const totalCount = await EmailTemplate.countDocuments(query);
-    const totalPages = Math.ceil(totalCount / limit);
-
-    res.json({
-      status: 'success',
-      data: {
-        templates,
-        totalCount,
-        totalPages,
-        currentPage: page
-      }
-    });
-
-  } catch (error) {
-    console.error('Templates error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to load templates'
-    });
-  }
-});
-
-// Get specific template
-app.get('/admin/templates/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const template = await EmailTemplate.findById(id);
-    if (!template) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Template not found'
-      });
-    }
-
-    res.json({
-      status: 'success',
-      data: { template }
-    });
-
-  } catch (error) {
-    console.error('Get template error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to load template'
-    });
-  }
-});
-
-// Create template
-app.post('/admin/templates', authenticateToken, async (req, res) => {
-  try {
-    const { name, subject, content, category = 'general' } = req.body;
-
-    if (!name || !subject || !content) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Name, subject, and content are required'
-      });
-    }
-
-    const template = new EmailTemplate({
+    const investor = new Investor({
+      email,
       name,
-      subject,
-      content,
-      category
+      phone,
+      country,
+      tier: tier || 'Standard'
     });
 
-    await template.save();
+    await investor.save();
 
     res.json({
       status: 'success',
-      message: 'Template saved successfully',
-      data: { template }
+      message: 'Investor added successfully',
+      data: investor
     });
 
   } catch (error) {
-    console.error('Create template error:', error);
+    console.error('Add investor error:', error);
     res.status(500).json({
       status: 'error',
-      message: 'Failed to create template'
+      message: 'Failed to add investor'
     });
   }
 });
 
-// Update template
-app.put('/admin/templates/:id', authenticateToken, async (req, res) => {
+// Test Email Configuration
+app.post('/test-email', async (req, res) => {
   try {
-    const { id } = req.params;
-    const { name, subject, content, category } = req.body;
-
-    const template = await EmailTemplate.findByIdAndUpdate(
-      id,
-      { name, subject, content, category, lastUsed: new Date() },
-      { new: true, runValidators: true }
-    );
-
-    if (!template) {
-      return res.status(404).json({
+    const testEmail = process.env.TEST_EMAIL || req.body.testEmail;
+    
+    if (!testEmail || !validator.isEmail(testEmail)) {
+      return res.status(400).json({
         status: 'error',
-        message: 'Template not found'
+        message: 'Valid test email address is required'
       });
     }
 
-    res.json({
-      status: 'success',
-      message: 'Template updated successfully',
-      data: { template }
-    });
-
-  } catch (error) {
-    console.error('Update template error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to update template'
-    });
-  }
-});
-
-// Delete template
-app.delete('/admin/templates/:id', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const template = await EmailTemplate.findByIdAndUpdate(
-      id,
-      { isActive: false },
-      { new: true }
-    );
-
-    if (!template) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Template not found'
-      });
-    }
-
-    res.json({
-      status: 'success',
-      message: 'Template deleted successfully'
-    });
-
-  } catch (error) {
-    console.error('Delete template error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to delete template'
-    });
-  }
-});
-
-// Analytics
-app.get('/admin/analytics', authenticateToken, async (req, res) => {
-  try {
-    const period = parseInt(req.query.period) || 30;
-
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - period);
-
-    const campaigns = await EmailCampaign.find({
-      sentAt: { $gte: startDate },
-      status: 'sent'
-    });
-
-    let totalSent = 0;
-    let totalDelivered = 0;
-    let totalOpened = 0;
-
-    campaigns.forEach(campaign => {
-      totalSent += campaign.recipients.length;
-      totalOpened += campaign.openCount;
-      totalDelivered += campaign.recipients.length;
-    });
-
-    const deliveryRate = totalSent > 0 ? (totalDelivered / totalSent * 100).toFixed(1) : 0;
-    const openRate = totalDelivered > 0 ? (totalOpened / totalDelivered * 100).toFixed(1) : 0;
-
-    res.json({
-      status: 'success',
-      data: {
-        deliveryRate: parseFloat(deliveryRate),
-        openRate: parseFloat(openRate),
-        clickRate: 0,
-        unsubscribeRate: 0,
-        deliveryTrend: 0.2,
-        openTrend: -0.3,
-        clickTrend: 0.1,
-        unsubscribeTrend: -0.1
-      }
-    });
-
-  } catch (error) {
-    console.error('Analytics error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to load analytics'
-    });
-  }
-});
-
-// Email Tracking Pixel
-app.get('/track/:campaignId/:recipientId', async (req, res) => {
-  try {
-    const { campaignId, recipientId } = req.params;
-
-    const trackingPixel = new TrackingPixel({
-      campaignId,
-      recipientId,
-      ipAddress: req.ip,
-      userAgent: req.get('User-Agent')
-    });
-
-    await trackingPixel.save();
-
-    await EmailCampaign.findByIdAndUpdate(campaignId, {
-      $inc: { openCount: 1 }
-    });
-
-    await EmailCampaign.updateOne(
-      {
-        _id: campaignId,
-        'recipients._id': recipientId
+    const mailOptions = {
+      from: {
+        name: 'BitHash Capital Test',
+        address: process.env.EMAIL_FROM || 'noreply@bithashcapital.com'
       },
-      {
-        $set: {
-          'recipients.$.status': 'opened',
-          'recipients.$.openedAt': new Date()
-        }
+      to: testEmail,
+      subject: 'Test Email from BitHash Capital',
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px; }
+            .success { color: #28a745; font-weight: bold; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h2>Test Email Successful! 🎉</h2>
+            <p>This is a test email from your BitHash Capital email system.</p>
+            <p>If you're receiving this, your email configuration is working correctly.</p>
+            <p class="success">✓ Email server is properly configured</p>
+            <p class="success">✓ Emails can be sent successfully</p>
+            <p><strong>Timestamp:</strong> ${new Date().toISOString()}</p>
+          </div>
+        </body>
+        </html>
+      `,
+      text: 'Test Email from BitHash Capital\n\nThis is a test email to verify your email configuration is working correctly.\n\nTimestamp: ' + new Date().toISOString()
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+
+    // Log the test email
+    const emailLog = new EmailLog({
+      from: 'BitHash Capital Test <' + (process.env.EMAIL_FROM || 'noreply@bithashcapital.com') + '>',
+      to: [testEmail],
+      subject: mailOptions.subject,
+      html: mailOptions.html,
+      text: mailOptions.text,
+      status: 'sent',
+      metadata: {
+        ipAddress: req.ip,
+        userAgent: req.get('User-Agent'),
+        frontendOrigin: req.get('Origin') || 'unknown',
+        isTest: true
       }
-    );
-
-    const pixel = Buffer.from(
-      'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
-      'base64'
-    );
-
-    res.writeHead(200, {
-      'Content-Type': 'image/gif',
-      'Content-Length': pixel.length,
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      'Pragma': 'no-cache',
-      'Expires': '0'
     });
 
-    res.end(pixel);
+    await emailLog.save();
+
+    res.json({
+      status: 'success',
+      message: 'Test email sent successfully',
+      data: {
+        messageId: info.messageId,
+        accepted: info.accepted,
+        testEmail: testEmail,
+        timestamp: new Date().toISOString()
+      }
+    });
 
   } catch (error) {
-    console.error('Tracking pixel error:', error);
-    const pixel = Buffer.from(
-      'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
-      'base64'
-    );
-    res.type('gif').send(pixel);
-  }
-});
-
-// Export endpoints
-app.get('/admin/export/investors', authenticateToken, async (req, res) => {
-  try {
-    const investors = await Investor.find({})
-      .sort({ joinDate: -1 })
-      .select('name email phone country joinDate tier status totalInvested');
-
-    const csvHeader = 'Name,Email,Phone,Country,Join Date,Tier,Status,Total Invested\n';
-    const csvRows = investors.map(inv => 
-      `"${inv.name}","${inv.email}","${inv.phone || ''}","${inv.country || ''}","${new Date(inv.joinDate).toISOString().split('T')[0]}","${inv.tier}","${inv.status}",${inv.totalInvested}`
-    ).join('\n');
-
-    const csv = csvHeader + csvRows;
-
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename=investors.csv');
-    res.send(csv);
-
-  } catch (error) {
-    console.error('Export investors error:', error);
+    console.error('Test email error:', error);
+    
     res.status(500).json({
       status: 'error',
-      message: 'Failed to export investors'
+      message: 'Failed to send test email',
+      error: error.message,
+      suggestion: 'Check your email configuration in environment variables'
     });
   }
 });
-
-app.get('/admin/export/emails', authenticateToken, async (req, res) => {
-  try {
-    const campaigns = await EmailCampaign.find({ status: 'sent' })
-      .populate('sentBy', 'name')
-      .sort({ sentAt: -1 })
-      .select('subject sentAt openCount recipients');
-
-    const csvHeader = 'Subject,Sent Date,Recipients,Open Rate,Sent By\n';
-    const csvRows = campaigns.map(campaign => {
-      const openRate = campaign.recipients.length > 0 ? 
-        ((campaign.openCount / campaign.recipients.length) * 100).toFixed(1) : 0;
-      
-      return `"${campaign.subject}","${new Date(campaign.sentAt).toISOString()}",${campaign.recipients.length},${openRate}%,"${campaign.sentBy?.name || 'System'}"`;
-    }).join('\n');
-
-    const csv = csvHeader + csvRows;
-
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename=email-history.csv');
-    res.send(csv);
-
-  } catch (error) {
-    console.error('Export emails error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to export email history'
-    });
-  }
-});
-
-// ======================
-// Helper Functions
-// ======================
-async function sendEmailCampaign(campaign) {
-  try {
-    const recipients = campaign.recipients;
-
-    for (const recipient of recipients) {
-      try {
-        let trackingPixel = null;
-        if (campaign.enableTracking) {
-          trackingPixel = `${process.env.API_BASE_URL || 'https://tiktok-com-shop.onrender.com'}/track/${campaign._id}/${recipient._id}`;
-        }
-
-        const emailHtml = generateEmailTemplate(campaign.content, trackingPixel, campaign.subject);
-
-        const mailOptions = {
-          from: {
-            name: 'BitHash Capital',
-            address: process.env.EMAIL_FROM || 'noreply@bithashcapital.com'
-          },
-          to: recipient.email,
-          subject: campaign.subject,
-          html: emailHtml,
-          headers: {
-            'X-Campaign-ID': campaign._id.toString(),
-            'X-Recipient-ID': recipient._id.toString()
-          }
-        };
-
-        await transporter.sendMail(mailOptions);
-
-        await EmailCampaign.updateOne(
-          {
-            _id: campaign._id,
-            'recipients._id': recipient._id
-          },
-          {
-            $set: {
-              'recipients.$.status': 'delivered'
-            }
-          }
-        );
-
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-      } catch (emailError) {
-        console.error(`Failed to send email to ${recipient.email}:`, emailError);
-        
-        await EmailCampaign.updateOne(
-          {
-            _id: campaign._id,
-            'recipients._id': recipient._id
-          },
-          {
-            $set: {
-              'recipients.$.status': 'failed',
-              'recipients.$.error': emailError.message
-            }
-          }
-        );
-      }
-    }
-
-    campaign.status = 'sent';
-    campaign.sentAt = new Date();
-    await campaign.save();
-
-  } catch (error) {
-    console.error('Send email campaign error:', error);
-    campaign.status = 'failed';
-    await campaign.save();
-    throw error;
-  }
-}
-
-// ======================
-// Initialize Default Admin
-// ======================
-async function initializeDefaultData() {
-  try {
-    // Create default admin if none exists
-    const adminCount = await AdminUser.countDocuments();
-    if (adminCount === 0) {
-      const defaultAdmin = new AdminUser({
-        username: 'admin',
-        password: 'admin123',
-        name: 'System Administrator',
-        role: 'superadmin'
-      });
-      await defaultAdmin.save();
-      console.log('Default admin user created: admin / admin123');
-      console.log('Change default password in production!');
-    } else {
-      console.log('Admin user already exists');
-    }
-
-    console.log('All default data initialized successfully');
-
-  } catch (error) {
-    console.error('Error initializing default data:', error);
-  }
-}
 
 // ======================
 // Error Handling
@@ -1271,19 +697,12 @@ app.use('*', (req, res) => {
 // ======================
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, async () => {
-  console.log('Starting BitHash Capital Admin Server...');
+app.listen(PORT, () => {
+  console.log('Starting Email Sending Server...');
   console.log(`Port: ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Frontend URL: https://citation-training-academy.vercel.app`);
-  console.log(`Backend URL: https://tiktok-com-shop.onrender.com`);
-  console.log(`Website: https://www.bithashcapital.live`);
-  
-  await initializeDefaultData();
-  
-  console.log('BitHash Capital Admin Server running successfully!');
+  console.log('Email Sending Server running successfully!');
   console.log('CORS configured for frontend access');
-  console.log('Database connected and ready');
   console.log('All systems operational');
 });
 
